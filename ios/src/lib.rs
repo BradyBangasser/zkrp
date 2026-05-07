@@ -121,7 +121,7 @@ impl MeshNode {
             core_identity,
             relay_addr,
             core_config,
-            |key, relay_client| ClientBehavior::new(key.public(), relay_client),
+            |key, relay_client| ClientBehavior::new(key.public(), relay_client, key),
         )
         .await
         .map_err(MeshError::from)?;
