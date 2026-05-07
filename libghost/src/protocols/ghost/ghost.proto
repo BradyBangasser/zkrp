@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package zrp.v0.ghost;
+
+message GhostEnvelope {
+  uint64 version = 1;
+  uint64 time = 2;
+  bytes payload = 3;
+}
