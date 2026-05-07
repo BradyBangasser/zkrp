@@ -1,0 +1,28 @@
+[package]
+name = "ghost-ios"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "ghost_ios"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+libghost = { path = "../libghost" }
+libp2p = { version = "0.56", features = [
+  "ed25519",
+  "noise",
+  "yamux",
+  "tcp",
+  "quic",
+  "kad",
+  "relay",
+  "dns",
+] }
+uniffi = { version = "0.31.1", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
+thiserror = "2.0.18"
+
+[build-dependencies]
+uniffi = { version = "0.31.1", features = ["build"] }

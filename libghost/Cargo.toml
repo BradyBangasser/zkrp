@@ -1,0 +1,25 @@
+[package]
+name = "libghost"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libp2p = { version = "0.56.0", features = [
+  "macros",
+  "tokio",
+  "tcp",
+  "quic",
+  "noise",
+  "yamux",
+  "kad",
+  "relay",
+  "dns",
+  "mdns",
+  "dcutr",
+  "autonat",
+  "identify",
+] }
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3.32"
