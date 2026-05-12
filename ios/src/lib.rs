@@ -22,6 +22,8 @@ pub enum MeshError {
     ConnectionFailed,
     #[error("Timeout")]
     Timeout,
+    #[error("Connection error: {msg}")]
+    ConnectionError { msg: String },
     #[error("Unknown error")]
     Unknown,
 }
@@ -125,7 +127,7 @@ impl MeshNode {
             })
             .await
             .map_err(|e| MeshError::Unknown)?
-            .map_err(|e| MeshError::Unknown)?;
+            .map_err(|e| MeshError::ConnectionError { msg: e })?;
 
         Ok(Self {
             inner: tokio::sync::Mutex::new(node),
