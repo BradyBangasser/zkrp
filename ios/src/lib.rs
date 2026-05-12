@@ -89,7 +89,7 @@ impl From<CoreEvent> for MeshEvent {
 
 #[derive(uniffi::Object)]
 pub struct MeshNode {
-    inner: std::sync::Mutex<CoreNode>,
+    inner: tokio::sync::Mutex<CoreNode>,
 }
 
 #[uniffi::export]
@@ -116,17 +116,54 @@ impl MeshNode {
         .map_err(MeshError::from)?;
 
         Ok(Self {
-            inner: std::sync::Mutex::new(node),
+            inner: tokio::sync::Mutex::new(node),
         })
     }
 
     pub fn drain_events(&self) -> Vec<MeshEvent> {
         self.inner
-            .lock()
-            .unwrap()
+            .blocking_lock()
             .drain_events()
             .into_iter()
             .map(MeshEvent::from)
             .collect()
     }
+
+    pub async fn send_message(&self, topic: String, text: String) -> Result<(), MeshError> {
+        self.inner
+            .blocking_lock()
+            .send_message(&topic, text.into_bytes())
+            .await
+            .map_err(MeshError::from)
+    }
+
+    pub fn drain_messages(&self) -> Vec<GhostMessage> {
+        self.inner
+            .blocking_lock()
+            .drain_messages()
+            .into_iter()
+            .map(|env| GhostMessage {
+                payload: String::from_utf8_lossy(&env.payload).to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            })
+            .collect()
+    }
+
+    pub async fn subscribe(&self, topic: String) -> Result<(), MeshError> {
+        self.inner
+            .lock()
+            .await
+            .subscribe(&topic)
+            .await
+            .map_err(MeshError::from)
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct GhostMessage {
+    pub payload: String,
+    pub timestamp: u64,
 }
