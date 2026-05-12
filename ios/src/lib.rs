@@ -4,7 +4,14 @@ use libghost::{
     identity::NodeIdentity as CoreIdentity, traits::MeshEvent as CoreEvent,
     transport::TransportConfig as CoreConfig,
 };
+use std::sync::OnceLock;
 
+static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static tokio::runtime::Runtime {
+    TOKIO_RUNTIME
+        .get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
+}
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -103,17 +110,22 @@ impl MeshNode {
         let keypair_bytes = identity.inner.to_keypair_bytes();
         let core_identity =
             CoreIdentity::from_keypair_bytes(&keypair_bytes).map_err(MeshError::from)?;
-
         let core_config = CoreConfig::with_ports(config.inner.tcp_port, config.inner.quic_port);
 
-        let node = CoreNode::start(
-            core_identity,
-            relay_addr,
-            core_config,
-            |key, relay_client| ClientBehavior::new(key.public(), relay_client, key),
-        )
-        .await
-        .map_err(MeshError::from)?;
+        let node = get_runtime()
+            .spawn(async move {
+                CoreNode::start(
+                    core_identity,
+                    relay_addr,
+                    core_config,
+                    |key, relay_client| ClientBehavior::new(key.public(), relay_client, key),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| MeshError::Unknown)?
+            .map_err(|e| MeshError::Unknown)?;
 
         Ok(Self {
             inner: tokio::sync::Mutex::new(node),
