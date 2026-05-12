@@ -1,8 +1,11 @@
 mod behavior;
 
 use futures::StreamExt;
-use libghost::{identity::NodeIdentity, transport::TransportConfig};
-use libp2p::{SwarmBuilder, mdns, noise, swarm::SwarmEvent, yamux};
+use libghost::{
+    identity::{self, NodeIdentity},
+    transport::TransportConfig,
+};
+use libp2p::{SwarmBuilder, identify, mdns, noise, swarm::SwarmEvent, yamux};
 use std::error::Error;
 use tracing::{Level, info};
 
@@ -30,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_quic()
         .with_dns()?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
-        .with_behaviour(|key, relay_client| MeshBehavior::new(key.public(), relay_client))?
+        .with_behaviour(MeshBehavior::new)?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(config.idle_connection_timeout))
         .build();
 
@@ -54,6 +57,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         swarm.behaviour_mut().kademlia.remove_address(&peer_id, &multiaddr);
                     }
                 },
+                SwarmEvent::NewListenAddr { address, .. } => {
+                    info!("Listening on {address}");
+                    info!("Relay addr: {address}/p2p/{}", swarm.local_peer_id());
+                },
+                SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(
+                    identify::Event::Sent { peer_id, .. }
+                )) => {
+                    info!("Sent identify to {peer_id}");
+                }
+                SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(
+                    identify::Event::Received { peer_id, info, connection_id }
+                )) => {
+                    info!("Identify received from {peer_id} CONN {}", connection_id);
+                    for addr in &info.listen_addrs {
+                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    }
+                }
+
                 other => info!("Swarm Event: {:?}", other),
             }
         }

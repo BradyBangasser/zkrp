@@ -1,17 +1,17 @@
-use libp2p::{gossipsub, swarm::NetworkBehaviour};
+use libp2p::{Multiaddr, PeerId, gossipsub, swarm::NetworkBehaviour};
 
 #[derive(Debug, Clone)]
 pub enum MeshEvent {
     PeerDiscovered { peer_id: String, addr: String },
     PeerLost { peer_id: String, addr: String },
-    RelayReservationAccepted,
+    RelayReservationAccepted { relay_addr: String },
     RelayReservationFailed,
 }
 
 pub trait MeshBehaviour: NetworkBehaviour {
-    fn on_relay_accepted(&mut self) {}
+    fn on_relay_accepted(&mut self, relay_peer_id: PeerId, relay_addr: Multiaddr) {}
     fn translate_event(event: &Self::ToSwarm) -> Option<MeshEvent>;
-    fn extract_gossip(event: &Self::ToSwarm) -> Option<Vec<u8>> {
+    fn extract_gossip(_event: &Self::ToSwarm) -> Option<Vec<u8>> {
         None
     }
     fn publish(

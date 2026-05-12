@@ -11,7 +11,7 @@ impl TransportConfig {
         Self {
             tcp_port: 9000,
             quic_port: 9000,
-            idle_connection_timeout: Duration::from_secs(15),
+            idle_connection_timeout: Duration::from_secs(1500),
         }
     }
 

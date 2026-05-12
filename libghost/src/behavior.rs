@@ -1,14 +1,17 @@
-use libghost::traits::{MeshBehaviour, MeshEvent};
+use crate::traits::{MeshBehaviour, MeshEvent};
+use libp2p::{Multiaddr, PeerId, identify};
 use libp2p::{gossipsub, identity::PublicKey, kad, relay, swarm::NetworkBehaviour};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
+use tracing::info;
 
 #[derive(NetworkBehaviour)]
 pub struct ClientBehavior {
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub relay_client: relay::client::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
+    pub identify: identify::Behaviour,
 }
 
 impl ClientBehavior {
@@ -19,11 +22,16 @@ impl ClientBehavior {
     ) -> Self {
         let peer_id = public_key.to_peer_id();
         let store = kad::store::MemoryStore::new(peer_id);
-        let kademlia = kad::Behaviour::with_config(peer_id, store, kad::Config::default());
+        let mut kademlia = kad::Behaviour::with_config(peer_id, store, kad::Config::default());
+        kademlia.set_mode(Some(kad::Mode::Client));
 
         let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(10))
+            .heartbeat_interval(Duration::from_secs(1))
             .validation_mode(gossipsub::ValidationMode::Strict)
+            .mesh_n(2)
+            .mesh_n_low(1)
+            .mesh_n_high(4)
+            .mesh_outbound_min(1)
             .message_id_fn(|msg| {
                 let mut h = DefaultHasher::new();
                 msg.data.hash(&mut h);
@@ -38,16 +46,24 @@ impl ClientBehavior {
         )
         .expect("valid gossipsub behaviour");
 
+        let identify = identify::Behaviour::new(identify::Config::new(
+            "/nocap/1.0.0".to_string(),
+            public_key.clone(),
+        ));
+
         Self {
             kademlia,
             relay_client,
             gossipsub,
+            identify,
         }
     }
 }
 
 impl MeshBehaviour for ClientBehavior {
-    fn on_relay_accepted(&mut self) {
+    fn on_relay_accepted(&mut self, relay_peer_id: PeerId, relay_addr: Multiaddr) {
+        info!("ADDING REPLAY PEER {}", relay_peer_id);
+        self.kademlia.add_address(&relay_peer_id, relay_addr);
         let _ = self.kademlia.bootstrap();
     }
 
@@ -65,7 +81,9 @@ impl MeshBehaviour for ClientBehavior {
 
             ClientBehaviorEvent::RelayClient(relay::client::Event::ReservationReqAccepted {
                 ..
-            }) => Some(MeshEvent::RelayReservationAccepted),
+            }) => Some(MeshEvent::RelayReservationAccepted {
+                relay_addr: String::new(),
+            }),
 
             _ => None,
         }

@@ -6,13 +6,13 @@ use prost::Message;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use libghost::{
+use crate::{
     identity::NodeIdentity,
     traits::{MeshBehaviour, MeshEvent},
     transport::TransportConfig,
 };
 
-use libghost::protocols::ghost::v0::{self, GhostEnvelope};
+use crate::protocols::ghost::v0::{self, GhostEnvelope};
 
 enum SwarmCommand {
     Publish {
@@ -66,7 +66,18 @@ impl MeshNode {
 
         swarm.listen_on(config.tcp_listen_addr().parse()?)?;
         swarm.listen_on(config.quic_listen_addr().parse()?)?;
-        swarm.dial(relay_multiaddr)?;
+        swarm.dial(relay_multiaddr.clone())?;
+
+        let relay_peer_id = relay_multiaddr
+            .iter()
+            .find_map(|p| {
+                if let libp2p::multiaddr::Protocol::P2p(peer_id) = p {
+                    Some(peer_id)
+                } else {
+                    None
+                }
+            })
+            .ok_or("relay addr missing /p2p/ component")?;
 
         let mut bootstrap_events: Vec<MeshEvent> = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -74,13 +85,29 @@ impl MeshNode {
         loop {
             tokio::select! {
                 event = swarm.select_next_some() => match event {
-                    SwarmEvent::Behaviour(ref b_event) => {
-                        if let Some(mesh_event) = B::translate_event(b_event) {
-                            match &mesh_event {
-                                MeshEvent::RelayReservationAccepted => {
-                                    swarm.behaviour_mut().on_relay_accepted();
-                                    bootstrap_events.push(mesh_event);
+                    SwarmEvent::Behaviour(b_event) => {
+                        let mesh_event = B::translate_event(&b_event);
+                        drop(b_event);
+                        if let Some(mesh_event) = mesh_event {
+                            match mesh_event {
+                                MeshEvent::RelayReservationAccepted { .. } => {
+                                    tracing::info!("RELAY RESERVATION ACCEPTED - calling on_relay_accepted");
+                                    swarm.behaviour_mut().on_relay_accepted(relay_peer_id, relay_multiaddr.clone());
+                                    bootstrap_events.push(MeshEvent::RelayReservationAccepted {
+                                        relay_addr: relay_multiaddr.to_string(),
+                                    });
+                                    tracing::info!("ACCEPTED");
                                     break;
+                                }
+                                MeshEvent::PeerDiscovered { ref peer_id, ref addr } => {
+                                    if let Ok(pid) = peer_id.parse::<libp2p::PeerId>() {
+                                        let relay_circuit = relay_multiaddr
+                                            .clone()
+                                            .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                                            .with(libp2p::multiaddr::Protocol::P2p(pid));
+                                        let _ = swarm.dial(relay_circuit);
+                                    }
+                                    bootstrap_events.push(mesh_event);
                                 }
                                 _ => bootstrap_events.push(mesh_event),
                             }
@@ -90,9 +117,17 @@ impl MeshNode {
                         bootstrap_events.push(MeshEvent::RelayReservationFailed);
                         break;
                     }
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == relay_peer_id => {
+
+                        let relay_circuit_addr = relay_multiaddr
+                            .clone()
+                            .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                        swarm.listen_on(relay_circuit_addr)?;
+                    }
+
                     _ => {}
                 },
-                _ = tokio::time::sleep_until(deadline) => break,
+                    _ = tokio::time::sleep_until(deadline) => break,
             }
         }
 
@@ -104,16 +139,25 @@ impl MeshNode {
                 tokio::select! {
                     event = swarm.select_next_some() => {
                         if let SwarmEvent::Behaviour(b_event) = event {
-                            // Extract all data before any await point so b_event
-                            // does not need to be Send or Sync.
                             let mesh_event = B::translate_event(&b_event);
                             let gossip_bytes = B::extract_gossip(&b_event);
                             drop(b_event);
 
-                            if let Some(mesh_event) = mesh_event {
+                            if let Some(mesh_event) = mesh_event
+                            && let MeshEvent::PeerDiscovered { ref peer_id, .. } = mesh_event
+                            && let Ok(pid) = peer_id.parse::<libp2p::PeerId>()
+                            {
+                                if pid != relay_peer_id {
+                                    let relay_circuit = relay_multiaddr
+                                        .clone()
+                                        .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                                        .with(libp2p::multiaddr::Protocol::P2p(pid));
+                                    tracing::info!("Dialing peer via relay circuit: {}", pid);
+                                    let _ = swarm.dial(relay_circuit);
+                                }
                                 let _ = notify_tx
                                     .send(SwarmNotification::MeshEvent(mesh_event))
-                                    .await;
+                                .await;
                             }
 
                             if let Some(bytes) = gossip_bytes {
@@ -121,7 +165,7 @@ impl MeshNode {
                                     Ok(envelope) => {
                                         let _ = notify_tx
                                             .send(SwarmNotification::Gossip(envelope))
-                                            .await;
+                                        .await;
                                     }
                                     Err(e) => {
                                         tracing::debug!("failed to decode envelope: {e}");
@@ -131,7 +175,7 @@ impl MeshNode {
                         }
                     },
 
-                    Some(cmd) = cmd_rx.recv() => match cmd {
+                        Some(cmd) = cmd_rx.recv() => match cmd {
                         SwarmCommand::Publish { topic, envelope } => {
                             let bytes = envelope.encode_to_vec();
                             if let Err(e) = swarm.behaviour_mut().publish(topic, bytes) {
@@ -155,8 +199,6 @@ impl MeshNode {
             messages: Vec::new(),
         })
     }
-
-    // ── Public API ────────────────────────────────────────────────────────────
 
     pub async fn subscribe(&self, topic_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let topic = gossipsub::IdentTopic::new(topic_name);

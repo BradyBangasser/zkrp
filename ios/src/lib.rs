@@ -1,12 +1,9 @@
-mod behavior;
-mod node;
-
-use behavior::ClientBehavior;
+use libghost::behavior::ClientBehavior;
+use libghost::node::MeshNode as CoreNode;
 use libghost::{
     identity::NodeIdentity as CoreIdentity, traits::MeshEvent as CoreEvent,
     transport::TransportConfig as CoreConfig,
 };
-use node::MeshNode as CoreNode;
 
 uniffi::setup_scaffolding!();
 
@@ -35,8 +32,6 @@ impl From<Box<dyn std::error::Error>> for MeshError {
     }
 }
 
-// ── NodeIdentity ──────────────────────────────────────────────────────────────
-
 #[derive(uniffi::Object)]
 pub struct NodeIdentity {
     inner: CoreIdentity,
@@ -56,8 +51,6 @@ impl NodeIdentity {
     }
 }
 
-// ── TransportConfig ───────────────────────────────────────────────────────────
-
 #[derive(uniffi::Object)]
 pub struct TransportConfig {
     inner: CoreConfig,
@@ -72,8 +65,6 @@ impl TransportConfig {
         }
     }
 }
-
-// ── MeshEvent ─────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Enum)]
 pub enum MeshEvent {
@@ -90,13 +81,11 @@ impl From<CoreEvent> for MeshEvent {
                 MeshEvent::PeerDiscovered { peer_id, addr }
             }
             CoreEvent::PeerLost { peer_id, addr } => MeshEvent::PeerLost { peer_id, addr },
-            CoreEvent::RelayReservationAccepted => MeshEvent::RelayReservationAccepted,
+            CoreEvent::RelayReservationAccepted { .. } => MeshEvent::RelayReservationAccepted,
             CoreEvent::RelayReservationFailed => MeshEvent::RelayReservationFailed,
         }
     }
 }
-
-// ── MeshNode ──────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Object)]
 pub struct MeshNode {
