@@ -4,6 +4,6 @@ package zrp.v0.ghost;
 
 message GhostEnvelope {
   uint32 version = 1;
-  uint64 time = 2;
+  uint64 time_nonce = 2;
   bytes payload = 3;
 }

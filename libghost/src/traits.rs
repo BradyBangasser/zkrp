@@ -19,6 +19,7 @@ pub trait MeshBehaviour: NetworkBehaviour {
         topic: gossipsub::IdentTopic,
         data: Vec<u8>,
     ) -> Result<(), Box<dyn std::error::Error>>;
+
     fn subscribe_topic(
         &mut self,
         topic: gossipsub::IdentTopic,
