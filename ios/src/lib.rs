@@ -1,10 +1,10 @@
 use libghost::behavior::ClientBehavior;
-use libghost::node::MeshNode as CoreNode;
-use libghost::{
-    identity::NodeIdentity as CoreIdentity, traits::MeshEvent as CoreEvent,
-    transport::TransportConfig as CoreConfig,
-};
-use std::sync::OnceLock;
+use libghost::context::{ZRPContext, ZRPHandle};
+use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
+use libghost::identity::NodeIdentity as CoreIdentity;
+use libghost::transport::TransportConfig as CoreConfig;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex;
 
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -12,6 +12,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME
         .get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
 }
+
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -41,6 +42,55 @@ impl From<Box<dyn std::error::Error>> for MeshError {
     }
 }
 
+#[uniffi::export(callback_interface)]
+pub trait SwiftEventHandler: Send + Sync {
+    fn on_message(&self, conversation: String, payload: Vec<u8>, content_type: u16);
+    fn on_peer_connected(&self, peer_id: String);
+    fn on_peer_disconnected(&self, peer_id: String);
+    fn on_connection_status(&self, status: String);
+    fn on_send_failed(&self, conversation: String);
+}
+
+struct SwiftHandlerBridge {
+    inner: Arc<dyn SwiftEventHandler>,
+}
+
+impl EventHandler for SwiftHandlerBridge {
+    fn handle(&self, event: &ZRPEvent) -> bool {
+        match event {
+            ZRPEvent::Message {
+                conversation,
+                payload,
+                content_type,
+                ..
+            } => {
+                self.inner
+                    .on_message(conversation.clone(), payload.clone(), *content_type);
+            }
+            ZRPEvent::PeerConnected { peer_id, .. } => {
+                self.inner.on_peer_connected(peer_id.to_string());
+            }
+            ZRPEvent::PeerDisconnected { peer_id, .. } => {
+                self.inner.on_peer_disconnected(peer_id.to_string());
+            }
+            ZRPEvent::ConnectionStatus(status) => {
+                let s = match status {
+                    ConnectionStatus::Connected { relay } => format!("connected:{}", relay),
+                    ConnectionStatus::Disconnected => "disconnected".to_string(),
+                    ConnectionStatus::Connecting => "connecting".to_string(),
+                    ConnectionStatus::Degraded { reason, .. } => format!("degraded:{}", reason),
+                };
+                self.inner.on_connection_status(s);
+            }
+            ZRPEvent::MessageSendFailed { conversation, .. } => {
+                self.inner.on_send_failed(conversation.clone());
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct NodeIdentity {
     inner: CoreIdentity,
@@ -60,6 +110,14 @@ impl NodeIdentity {
     }
 }
 
+impl Default for NodeIdentity {
+    fn default() -> Self {
+        Self {
+            inner: CoreIdentity::generate(),
+        }
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct TransportConfig {
     inner: CoreConfig,
@@ -75,50 +133,36 @@ impl TransportConfig {
     }
 }
 
-#[derive(uniffi::Enum)]
-pub enum MeshEvent {
-    PeerDiscovered { peer_id: String, addr: String },
-    PeerLost { peer_id: String, addr: String },
-    RelayReservationAccepted,
-    RelayReservationFailed,
-}
-
-impl From<CoreEvent> for MeshEvent {
-    fn from(e: CoreEvent) -> Self {
-        match e {
-            CoreEvent::PeerDiscovered { peer_id, addr } => {
-                MeshEvent::PeerDiscovered { peer_id, addr }
-            }
-            CoreEvent::PeerLost { peer_id, addr } => MeshEvent::PeerLost { peer_id, addr },
-            CoreEvent::RelayReservationAccepted { .. } => MeshEvent::RelayReservationAccepted,
-            CoreEvent::RelayReservationFailed => MeshEvent::RelayReservationFailed,
-        }
-    }
-}
-
 #[derive(uniffi::Object)]
 pub struct MeshNode {
-    inner: tokio::sync::Mutex<CoreNode>,
+    handle: Mutex<Option<ZRPHandle>>,
 }
 
 #[uniffi::export]
 impl MeshNode {
     #[uniffi::constructor]
     pub async fn new(
-        identity: std::sync::Arc<NodeIdentity>,
+        identity: Arc<NodeIdentity>,
         relay_addr: String,
-        config: std::sync::Arc<TransportConfig>,
+        config: Arc<TransportConfig>,
+        handler: Box<dyn SwiftEventHandler>,
     ) -> Result<Self, MeshError> {
-        let keypair_bytes = identity.inner.to_keypair_bytes();
-        let core_identity =
-            CoreIdentity::from_keypair_bytes(&keypair_bytes).map_err(MeshError::from)?;
+        let core_identity = CoreIdentity::from_keypair_bytes(&identity.inner.to_keypair_bytes())
+            .map_err(MeshError::from)?;
+
         let core_config = CoreConfig::with_ports(config.inner.tcp_port, config.inner.quic_port);
 
-        let node = get_runtime()
+        let bridge = SwiftHandlerBridge {
+            inner: Arc::from(handler),
+        };
+
+        let handle = get_runtime()
             .spawn(async move {
-                CoreNode::start(
+                let mut ctx = ZRPContext::default();
+                ctx.register_handler("swift", bridge).await;
+                ctx.start(
                     core_identity,
-                    relay_addr,
+                    vec![relay_addr],
                     core_config,
                     |key, relay_client| ClientBehavior::new(key.public(), relay_client, key),
                 )
@@ -126,58 +170,44 @@ impl MeshNode {
                 .map_err(|e| e.to_string())
             })
             .await
-            .map_err(|e| MeshError::Unknown)?
+            .map_err(|_| MeshError::Unknown)?
             .map_err(|e| MeshError::ConnectionError { msg: e })?;
 
         Ok(Self {
-            inner: tokio::sync::Mutex::new(node),
+            handle: Mutex::new(Some(handle)),
         })
     }
 
-    pub fn drain_events(&self) -> Vec<MeshEvent> {
-        self.inner
-            .blocking_lock()
-            .drain_events()
-            .into_iter()
-            .map(MeshEvent::from)
-            .collect()
+    pub async fn subscribe(&self, topic: String) -> Result<(), MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.subscribe(topic).await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
     }
 
     pub async fn send_message(&self, topic: String, text: String) -> Result<(), MeshError> {
-        self.inner
-            .blocking_lock()
-            .send_message(&topic, text.into_bytes())
-            .await
-            .map_err(MeshError::from)
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.publish(topic, text.into_bytes()).await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
     }
 
-    pub fn drain_messages(&self) -> Vec<GhostMessage> {
-        self.inner
-            .blocking_lock()
-            .drain_messages()
-            .into_iter()
-            .map(|env| GhostMessage {
-                payload: String::from_utf8_lossy(&env.payload).to_string(),
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            })
-            .collect()
+    pub async fn unsubscribe(&self, topic: String) -> Result<(), MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.unsubscribe(topic).await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
     }
 
-    pub async fn subscribe(&self, topic: String) -> Result<(), MeshError> {
-        self.inner
-            .lock()
-            .await
-            .subscribe(&topic)
-            .await
-            .map_err(MeshError::from)
+    pub async fn shutdown(&self) {
+        if let Some(h) = self.handle.lock().await.take() {
+            h.shutdown().await;
+        }
     }
-}
-
-#[derive(uniffi::Record)]
-pub struct GhostMessage {
-    pub payload: String,
-    pub timestamp: u64,
 }

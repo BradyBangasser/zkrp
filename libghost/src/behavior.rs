@@ -75,25 +75,28 @@ impl MeshBehaviour for ClientBehavior {
                 .iter()
                 .next()
                 .map(|addr| MeshEvent::PeerDiscovered {
-                    peer_id: peer.to_string(),
-                    addr: addr.to_string(),
+                    peer_id: *peer,
+                    addr: addr.clone(),
                 }),
 
             ClientBehaviorEvent::RelayClient(relay::client::Event::ReservationReqAccepted {
+                relay_peer_id,
                 ..
             }) => Some(MeshEvent::RelayReservationAccepted {
-                relay_addr: String::new(),
+                peer_id: *relay_peer_id,
             }),
 
             _ => None,
         }
     }
 
-    fn extract_gossip(event: &ClientBehaviorEvent) -> Option<Vec<u8>> {
+    fn extract_gossip(event: &ClientBehaviorEvent) -> Option<(Vec<u8>, PeerId)> {
         match event {
-            ClientBehaviorEvent::Gossipsub(gossipsub::Event::Message { message, .. }) => {
-                Some(message.data.clone())
-            }
+            ClientBehaviorEvent::Gossipsub(gossipsub::Event::Message {
+                message,
+                propagation_source,
+                ..
+            }) => Some((message.data.clone(), *propagation_source)),
             _ => None,
         }
     }
@@ -101,7 +104,7 @@ impl MeshBehaviour for ClientBehavior {
         &mut self,
         topic: gossipsub::IdentTopic,
         data: Vec<u8>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), gossipsub::PublishError> {
         self.gossipsub.publish(topic, data)?;
         Ok(())
     }

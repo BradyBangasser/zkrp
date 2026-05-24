@@ -2,7 +2,7 @@ use libp2p::{
     PeerId, autonat, dcutr, gossipsub, identify,
     identity::Keypair,
     kad::{self, store::MemoryStore},
-    mdns, noise, relay,
+    mdns, relay,
     swarm::NetworkBehaviour,
 };
 

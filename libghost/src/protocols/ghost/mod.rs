@@ -11,4 +11,6 @@ pub mod v0 {
 
     mod header;
     mod message;
+
+    pub type GhostMessage = message::XRFMessage;
 }

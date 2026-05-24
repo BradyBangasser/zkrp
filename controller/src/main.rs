@@ -1,19 +1,18 @@
 mod behavior;
 
 use futures::StreamExt;
-use libghost::{
-    identity::{self, NodeIdentity},
-    transport::TransportConfig,
-};
+use libghost::{identity::NodeIdentity, transport::TransportConfig};
 use libp2p::{SwarmBuilder, identify, mdns, noise, swarm::SwarmEvent, yamux};
 use std::error::Error;
-use tracing::{Level, info};
+use tracing::{Level, debug, info};
 
 use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .init();
 
     let identity = NodeIdentity::generate();
     let port = std::env::var("PORT")
@@ -45,6 +44,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             event = swarm.select_next_some() => match event {
+                SwarmEvent::ConnectionClosed{
+                    connection_id,
+                    peer_id,
+                    cause,
+                    ..
+                } => {
+                    swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
+                    debug!("Peer {} disconnect (cid: {}), reason: {:?}", peer_id, connection_id, cause);
+                },
                 SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns::Event::Discovered(peers))) => {
                     for (peer_id, multiaddr) in peers {
                         info!("mDNS Discovered: {} at {}", peer_id, multiaddr);
