@@ -10,7 +10,7 @@ pub enum MeshEvent {
 }
 
 pub trait MeshBehaviour: NetworkBehaviour {
-    fn on_relay_accepted(&mut self, relay_peer_id: PeerId, relay_addr: Multiaddr) {}
+    fn on_relay_accepted(&mut self, _relay_peer_id: PeerId, _relay_addr: Multiaddr) {}
     fn translate_event(event: &Self::ToSwarm) -> Option<MeshEvent>;
     fn extract_gossip(_event: &Self::ToSwarm) -> Option<(Vec<u8>, PeerId)> {
         None

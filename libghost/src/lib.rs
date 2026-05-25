@@ -6,5 +6,6 @@ pub mod identity;
 pub mod keybundle;
 pub mod messager;
 pub mod protocols;
+mod relay;
 pub mod traits;
 pub mod transport;

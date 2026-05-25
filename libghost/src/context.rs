@@ -1,3 +1,4 @@
+use crate::relay::RelayClient;
 use crate::{
     codec::Codec,
     handler::{ConnectionStatus, DisconnectReason, EventHandler, SendFailReason, ZRPEvent},
@@ -336,6 +337,19 @@ impl ZRPHandle {
     pub async fn shutdown(&self) {
         let _ = self.cmd_tx.send(SwarmCommand::Shutdown).await;
     }
+
+    pub async fn discover_relays(
+        grpc_addr: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut client = RelayClient::connect(grpc_addr).await?;
+        let relays = client.list_relays().await?;
+
+        relays
+            .iter()
+            .for_each(|relay| tracing::info!("{:?}", relay));
+
+        Ok(relays.into_iter().map(|r| r.multiaddr).collect())
+    }
 }
 
 pub struct ZRPContext {
@@ -367,7 +381,8 @@ impl ZRPContext {
     pub async fn start<B, F>(
         self,
         identity: crate::identity::NodeIdentity,
-        relay_addrs: Vec<String>,
+        relay_addrs: Option<Vec<String>>,
+        grpc_relays: Option<Vec<String>>,
         transport_config: crate::transport::TransportConfig,
         make_behavior: F,
     ) -> Result<ZRPHandle, Box<dyn std::error::Error>>
@@ -376,6 +391,24 @@ impl ZRPContext {
         B::ToSwarm: Send,
         F: FnOnce(&libp2p::identity::Keypair, libp2p::relay::client::Behaviour) -> B,
     {
+        let mut relays = relay_addrs.unwrap_or_default();
+
+        if let Some(grpc) = grpc_relays {
+            for grpc_addr in grpc {
+                match ZRPHandle::discover_relays(&grpc_addr).await {
+                    Ok(mut relay) => relays.append(&mut relay),
+                    Err(e) => tracing::info!("Failed to discover relays: {}", e),
+                }
+            }
+        }
+
+        if relays.is_empty() {
+            match ZRPHandle::discover_relays("http://127.0.0.1:9001").await {
+                Ok(mut relay) => relays.append(&mut relay),
+                Err(e) => tracing::info!("Failed to discover relays: {}", e),
+            }
+        }
+
         let (crypto_tx, crypto_rx) = mpsc::channel::<SwarmCommand>(32);
         let (swarm_tx, swarm_rx) = mpsc::channel::<SwarmCommand>(32);
         let (raw_tx, raw_rx) = mpsc::channel::<RawEvent>(64);
@@ -398,7 +431,7 @@ impl ZRPContext {
 
         tokio::spawn(swarm_task::<B>(
             swarm,
-            relay_addrs,
+            relays,
             transport_config,
             swarm_rx,
             raw_tx,

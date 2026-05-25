@@ -144,11 +144,9 @@ fn print_help() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /*
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
-    */
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
     let relay_addr = fetch_relay_addr().await?;
     info!("Using relay: {}", relay_addr);
@@ -169,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     let handle = ctx
-        .start(identity, vec![relay_addr], config, |key, relay_client| {
+        .start(identity, None, None, config, |key, relay_client| {
             ClientBehavior::new(key.public(), relay_client, key)
         })
         .await?;

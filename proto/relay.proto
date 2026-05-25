@@ -1,0 +1,77 @@
+syntax = "proto3";
+package zrp.relay.v1;
+
+import "google/protobuf/empty.proto";
+
+message RelayInfo {
+  string multiaddr              = 1;
+  string peer_id                = 2;
+  repeated string meshes        = 3;
+  string region                 = 4;
+  uint32 load                   = 5;
+  uint64 registered_at          = 6;
+  uint32 port                   = 7;
+}
+
+message RelayListResponse {
+  repeated RelayInfo relays     = 1;
+  uint64 refresh_after_secs     = 2;
+}
+
+enum HealthStatus {
+  HEALTHY   = 0;
+  DEGRADED  = 1;
+  UNHEALTHY = 2;
+}
+
+message HealthResponse {
+  HealthStatus status           = 1;
+  string peer_id                = 2;
+  uint64 uptime_seconds         = 3;
+  repeated string meshes        = 4;
+  string version                = 5;
+}
+
+message RelayStats {
+  uint32 connected_peers        = 1;
+  uint32 active_reservations    = 2;
+  uint64 messages_relayed       = 3;
+  uint64 bytes_relayed          = 4;
+  uint32 gossipsub_peers        = 5;
+  map<string, uint32> peers_per_mesh = 6;
+  uint32 kademlia_peers         = 7;
+  float  cpu_usage              = 8;
+  uint64 memory_bytes           = 9;
+  uint64 uptime_seconds         = 10;
+}
+
+message StatsResponse {
+  RelayStats current            = 1;
+  repeated RelayStats history   = 2;
+  uint64 snapshot_interval_secs = 3;
+}
+
+message RegisterRequest {
+  RelayInfo info                = 1;
+}
+
+message DeregisterRequest {
+  string peer_id                = 1;
+}
+
+message WatchStatsRequest {
+  uint64 interval_secs          = 1;
+}
+
+service RelayService {
+  rpc ListRelays(google.protobuf.Empty)     returns (RelayListResponse);
+
+  rpc Health(google.protobuf.Empty)         returns (HealthResponse);
+
+  rpc Stats(google.protobuf.Empty)          returns (StatsResponse);
+
+  rpc WatchStats(WatchStatsRequest)         returns (stream StatsResponse);
+
+  rpc Register(RegisterRequest)             returns (google.protobuf.Empty);
+  rpc Deregister(DeregisterRequest)         returns (google.protobuf.Empty);
+}

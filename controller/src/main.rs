@@ -1,22 +1,33 @@
 mod behavior;
-
+mod grpc;
+use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
 use futures::StreamExt;
 use libghost::{identity::NodeIdentity, transport::TransportConfig};
 use libp2p::{SwarmBuilder, identify, mdns, noise, swarm::SwarmEvent, yamux};
 use std::error::Error;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{Level, debug, info};
 
-use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
+#[derive(Clone)]
+pub struct RelayState {
+    pub peer_id: String,
+    pub port: u32,
+    pub connected_peers: Arc<Mutex<Vec<libp2p::PeerId>>>,
+    pub messages_relayed: Arc<std::sync::atomic::AtomicU64>,
+    pub started_at: std::time::Instant,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let identity = NodeIdentity::generate();
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "9000".to_string())
+        .parse::<u16>()?;
+    let grpc_port = std::env::var("GRPC_PORT")
+        .unwrap_or_else(|_| "9001".to_string())
         .parse::<u16>()?;
     let config = TransportConfig::with_ports(port, port);
 
@@ -39,36 +50,52 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.listen_on(config.quic_listen_addr().parse()?)?;
     swarm.listen_on(config.tcp_listen_addr().parse()?)?;
 
+    let state = RelayState {
+        peer_id: swarm.local_peer_id().to_string(),
+        connected_peers: Arc::new(Mutex::new(Vec::new())),
+        messages_relayed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        started_at: std::time::Instant::now(),
+        port: port.into(),
+    };
+
+    // Spawn gRPC — shares state via Arc clones
+    let grpc_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = grpc::serve(grpc_port, grpc_state).await {
+            tracing::error!("gRPC server error: {e}");
+        }
+    });
+
     info!("Listening for incoming mesh connections...");
+    info!("gRPC on port {grpc_port}");
 
     loop {
         tokio::select! {
             event = swarm.select_next_some() => match event {
-                SwarmEvent::ConnectionClosed{
-                    connection_id,
-                    peer_id,
-                    cause,
-                    ..
-                } => {
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    state.connected_peers.lock().await.push(peer_id);
+                }
+                SwarmEvent::ConnectionClosed { connection_id, peer_id, cause, .. } => {
                     swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
+                    state.connected_peers.lock().await.retain(|p| p != &peer_id);
                     debug!("Peer {} disconnect (cid: {}), reason: {:?}", peer_id, connection_id, cause);
-                },
+                }
                 SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns::Event::Discovered(peers))) => {
                     for (peer_id, multiaddr) in peers {
                         info!("mDNS Discovered: {} at {}", peer_id, multiaddr);
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
                     }
-                },
+                }
                 SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns::Event::Expired(peers))) => {
                     for (peer_id, multiaddr) in peers {
                         info!("mDNS Expired: {} at {}", peer_id, multiaddr);
                         swarm.behaviour_mut().kademlia.remove_address(&peer_id, &multiaddr);
                     }
-                },
+                }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Listening on {address}");
                     info!("Relay addr: {address}/p2p/{}", swarm.local_peer_id());
-                },
+                }
                 SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(
                     identify::Event::Sent { peer_id, .. }
                 )) => {
@@ -82,7 +109,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
                     }
                 }
-
                 other => info!("Swarm Event: {:?}", other),
             }
         }
