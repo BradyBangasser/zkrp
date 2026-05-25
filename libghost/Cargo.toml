@@ -30,9 +30,6 @@ serde = { version = "1", features = ["derive"] }
 rand = "0"
 zeroize = { version = "1", features = ["std"] }
 ring = "0.17"
-openssl = "0.10"
-geolocation = "0.2"
-public-ip = "0.2"
 tonic = "0.14"
 tonic-prost = "0.14"
 
