@@ -212,3 +212,32 @@ impl MeshNode {
         }
     }
 }
+
+#[uniffi::export]
+pub async fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
+    match libghost::relay::RelayClient::connect(&grpc_addr).await {
+        Ok(mut client) => client
+            .list_relays()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| RelayInfo {
+                multiaddr: r.multiaddr,
+                peer_id: r.peer_id,
+                region: r.region,
+                load: r.load,
+                meshes: r.meshes,
+            })
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct RelayInfo {
+    pub multiaddr: String,
+    pub peer_id: String,
+    pub region: String,
+    pub load: u32,
+    pub meshes: Vec<String>,
+}
