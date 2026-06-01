@@ -2,6 +2,7 @@ use libghost::behavior::ClientBehavior;
 use libghost::context::{ZRPContext, ZRPHandle};
 use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
 use libghost::identity::NodeIdentity as CoreIdentity;
+use libghost::store::{GhostStore, SqliteStore};
 use libghost::transport::TransportConfig as CoreConfig;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
@@ -13,7 +14,29 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
         .get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
 }
 
+fn documents_dir() -> String {
+    std::env::var("HOME")
+        .map(|h| {
+            if cfg!(target_os = "ios") {
+                format!("{}/Documents", h)
+            } else {
+                format!("{}/.ghost", h)
+            }
+        })
+        .unwrap_or_else(|_| "/tmp".to_string())
+}
+
+fn ghost_db_path() -> String {
+    format!("{}/ghost.db", documents_dir())
+}
+
+fn make_store() -> Arc<dyn GhostStore> {
+    Arc::new(SqliteStore::new(&ghost_db_path()))
+}
+
 uniffi::setup_scaffolding!();
+
+// MARK: - Error
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MeshError {
@@ -105,6 +128,14 @@ impl NodeIdentity {
         }
     }
 
+    #[uniffi::constructor]
+    pub fn load_or_generate(db_path: String) -> Self {
+        let store: Arc<dyn GhostStore> = Arc::new(SqliteStore::new(&db_path));
+        Self {
+            inner: CoreIdentity::load_or_generate(&store),
+        }
+    }
+
     pub fn peer_id_string(&self) -> String {
         self.inner.peer_id_string()
     }
@@ -113,7 +144,7 @@ impl NodeIdentity {
 impl Default for NodeIdentity {
     fn default() -> Self {
         Self {
-            inner: CoreIdentity::generate(),
+            inner: CoreIdentity::load_or_generate(&make_store()),
         }
     }
 }
@@ -156,9 +187,12 @@ impl MeshNode {
             inner: Arc::from(handler),
         };
 
+        let db_path = ghost_db_path();
+
         let handle = get_runtime()
             .spawn(async move {
-                let mut ctx = ZRPContext::default();
+                let store = make_store();
+                let mut ctx = ZRPContext::with_store(Arc::clone(&store));
                 ctx.register_handler("swift", bridge).await;
                 ctx.start(
                     core_identity,

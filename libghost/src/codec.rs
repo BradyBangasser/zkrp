@@ -3,6 +3,13 @@ use std::error::Error;
 
 use zeroize::Zeroize;
 
+pub const CONTENT_TYPE_TEXT: u16 = 0x0001;
+pub const CONTENT_TYPE_CHUNK_STORE: u16 = 0x0050;
+pub const CONTENT_TYPE_CHUNK_STORE_ACK: u16 = 0x0051;
+pub const CONTENT_TYPE_CHUNK_REQUEST: u16 = 0x0052;
+pub const CONTENT_TYPE_CHUNK_RESPONSE: u16 = 0x0053;
+pub const CONTENT_TYPE_BLOB_MANIFEST: u16 = 0x0054;
+
 type EncoderFn = Box<dyn Fn(&dyn Any) -> Result<Vec<u8>, Box<dyn Error>> + Send + Sync>;
 type DecoderFn = Box<dyn Fn(&[u8]) -> Result<Box<dyn Any + Send>, Box<dyn Error>> + Send + Sync>;
 

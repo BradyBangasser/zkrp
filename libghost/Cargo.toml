@@ -28,10 +28,15 @@ prost = "0.14.3"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 rand = "0"
-zeroize = { version = "1", features = ["std"] }
+zeroize = { version = "1", features = ["std", "derive"] }
 ring = "0.17"
 tonic = "0.14"
 tonic-prost = "0.14"
+rusqlite = { version = "0.40", features = ["bundled"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.11"
+ulid = "1.2"
 
 [build-dependencies]
 prost-build = "0.14"

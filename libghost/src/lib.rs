@@ -1,4 +1,5 @@
 pub mod behavior;
+pub mod blob;
 pub mod codec;
 pub mod context;
 pub mod handler;
@@ -7,5 +8,6 @@ pub mod keybundle;
 pub mod messager;
 pub mod protocols;
 pub mod relay;
+pub mod store;
 pub mod traits;
 pub mod transport;
