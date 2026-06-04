@@ -31,12 +31,12 @@ impl NodeIdentity {
     }
 
     pub fn load_or_generate(store: &Arc<dyn GhostStore>) -> Self {
-        if let Some(bytes) = store.get("ghost/identity/keypair") {
-            if let Ok(keypair) = libp2p::identity::Keypair::from_protobuf_encoding(&bytes) {
-                let peer_id = keypair.public().to_peer_id();
-                tracing::info!("Loaded stable identity: {}", peer_id);
-                return Self { keypair, peer_id };
-            }
+        if let Some(bytes) = store.get("ghost/identity/keypair")
+            && let Ok(keypair) = libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+        {
+            let peer_id = keypair.public().to_peer_id();
+            tracing::info!("Loaded stable identity: {}", peer_id);
+            return Self { keypair, peer_id };
         }
         let identity = Self::generate();
         let bytes = identity

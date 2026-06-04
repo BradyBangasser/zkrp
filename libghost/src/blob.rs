@@ -4,6 +4,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit},
 };
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
@@ -159,8 +160,239 @@ impl BlobManager {
         }
     }
 
+    pub async fn handle_chunk_request(&self, request: ChunkRequest, from_peer: &str) {
+        let chunk_id_hex = hex::encode(request.chunk_id);
+        let key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
+
+        let response = match self.store.get(&key) {
+            Some(bytes) => match postcard::from_bytes::<BlobChunk>(&bytes) {
+                Ok(chunk) => {
+                    tracing::debug!(
+                        "Serving chunk {} to peer {}",
+                        &chunk_id_hex[..8],
+                        &from_peer[..8]
+                    );
+                    ChunkResponse { chunk, found: true }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to deserialize chunk {}: {}", &chunk_id_hex[..8], e);
+                    ChunkResponse {
+                        chunk: BlobChunk {
+                            blob_id: request.blob_id,
+                            chunk_index: 0,
+                            chunk_id: request.chunk_id,
+                            ciphertext: vec![],
+                            nonce: [0u8; 12],
+                        },
+                        found: false,
+                    }
+                }
+            },
+            None => {
+                tracing::debug!(
+                    "Don't have chunk {} requested by {}",
+                    &chunk_id_hex[..8],
+                    &from_peer[..8]
+                );
+                ChunkResponse {
+                    chunk: BlobChunk {
+                        blob_id: request.blob_id,
+                        chunk_index: 0,
+                        chunk_id: request.chunk_id,
+                        ciphertext: vec![],
+                        nonce: [0u8; 12],
+                    },
+                    found: false,
+                }
+            }
+        };
+
+        let topic = format!("ghost/blobs/store/{}", from_peer);
+        if let Ok(payload) = postcard::to_allocvec(&response) {
+            self.handle.publish(topic, payload).await;
+        }
+    }
+
+    pub async fn handle_chunk_response(&self, response: ChunkResponse, from_peer: &str) {
+        if !response.found {
+            tracing::debug!(
+                "Peer {} doesn't have chunk {}",
+                &from_peer[..8],
+                &hex::encode(response.chunk.chunk_id)[..8]
+            );
+            return;
+        }
+
+        let chunk_id_hex = hex::encode(response.chunk.chunk_id);
+        let blob_id_hex = hex::encode(response.chunk.blob_id);
+
+        let plaintext = match self.decrypt_chunk(&response.chunk) {
+            Ok(p) => p,
+            Err(BlobError::HashMismatch) => {
+                tracing::warn!(
+                    "Chunk {} from {} failed verification",
+                    &chunk_id_hex[..8],
+                    &from_peer[..8]
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("Chunk decryption error: {}", e);
+                return;
+            }
+        };
+
+        let store_key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
+        if let Ok(bytes) = postcard::to_allocvec(&response.chunk) {
+            self.store.set(&store_key, bytes);
+        }
+
+        let mut retrievals = self.retrievals.lock().await;
+        if let Some(state) = retrievals.get_mut(&blob_id_hex) {
+            state
+                .received_chunks
+                .insert(response.chunk.chunk_index, plaintext);
+
+            let received = state.received_chunks.len();
+            let total = state.manifest.chunk_ids.len();
+
+            tracing::debug!(
+                "Blob {} progress: {}/{} chunks",
+                &blob_id_hex[..8],
+                received,
+                total
+            );
+        }
+    }
+
+    pub async fn handle_manifest(&self, manifest: BlobManifest) {
+        let blob_id_hex = hex::encode(manifest.blob_id);
+        let key = format!("ghost/blobs/manifests/{}", blob_id_hex);
+
+        if self.store.get(&key).is_some() {
+            return;
+        }
+
+        if let Ok(bytes) = postcard::to_allocvec(&manifest) {
+            self.store.set(&key, bytes);
+            tracing::debug!(
+                "Stored manifest for blob {} from {}",
+                &blob_id_hex[..8],
+                &manifest.sender_peer_id[..8]
+            );
+        }
+    }
+
+    pub async fn handle_store_request(&self, request: ChunkStoreRequest, from_peer: &str) {
+        let chunk_id_hex = hex::encode(request.chunk.chunk_id);
+
+        match self.decrypt_chunk(&request.chunk) {
+            Ok(_plaintext) => {
+                // Hash matches
+            }
+            Err(BlobError::HashMismatch) => {
+                tracing::warn!(
+                    "Chunk {} from {} failed hash verification — ignoring",
+                    &chunk_id_hex[..8],
+                    &from_peer[..8]
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("Chunk {} decryption error: {}", &chunk_id_hex[..8], e);
+                return;
+            }
+        }
+
+        let usage = self.storage_usage();
+        let max_bytes: u64 = 50 * 1024 * 1024; // TODO: CHANGE TO CONFIG LIMIT
+
+        if usage > max_bytes {
+            tracing::warn!(
+                "Blob storage full ({} MB), rejecting chunk from {}",
+                usage / 1024 / 1024,
+                &from_peer[..8]
+            );
+            let ack = ChunkStoreAck {
+                chunk_id: request.chunk.chunk_id,
+                stored: false,
+            };
+            let topic = format!("ghost/blobs/store/{}", from_peer);
+            if let Ok(payload) = postcard::to_allocvec(&ack) {
+                self.handle.publish(topic, payload).await;
+            }
+            return;
+        }
+
+        let key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
+        match postcard::to_allocvec(&request.chunk) {
+            Ok(bytes) => {
+                self.store.set(&key, bytes);
+                tracing::debug!(
+                    "Stored chunk {} for peer {}",
+                    &chunk_id_hex[..8],
+                    &from_peer[..8]
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize chunk: {}", e);
+                return;
+            }
+        }
+
+        let ack = ChunkStoreAck {
+            chunk_id: request.chunk.chunk_id,
+            stored: true,
+        };
+        let topic = format!("ghost/blobs/store/{}", from_peer);
+        if let Ok(payload) = postcard::to_allocvec(&ack) {
+            self.handle.publish(topic, payload).await;
+        }
+    }
+
     pub async fn on_peer_connected(&self, peer_id: String) {
         self.connected_peers.lock().await.push(peer_id);
+    }
+
+    pub fn storage_usage(&self) -> u64 {
+        self.store
+            .list("ghost/blobs/chunks/")
+            .into_iter()
+            .filter_map(|k| self.store.get(&k))
+            .map(|v| v.len() as u64)
+            .sum()
+    }
+
+    pub fn evict_old(&self, max_age_secs: u64) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let manifests = self.store.list("ghost/blobs/manifests/");
+        let mut evicted = 0usize;
+
+        for key in manifests {
+            if let Some(bytes) = self.store.get(&key)
+                && let Ok(manifest) = postcard::from_bytes::<BlobManifest>(&bytes)
+                && now.saturating_sub(manifest.created_at) > max_age_secs
+            {
+                for chunk_id in &manifest.chunk_ids {
+                    let chunk_key = format!("ghost/blobs/chunks/{}", hex::encode(chunk_id));
+                    self.store.delete(&chunk_key);
+                    evicted += 1;
+                }
+                self.store.delete(&format!(
+                    "ghost/blobs/cache/{}",
+                    hex::encode(manifest.blob_id)
+                ));
+                self.store.delete(&key);
+            }
+        }
+
+        if evicted > 0 {
+            tracing::info!("Evicted {} old chunks from blob storage", evicted);
+        }
     }
 
     pub async fn on_peer_disconnected(&self, peer_id: &str) {
@@ -201,7 +433,7 @@ impl BlobManager {
                 let cipher = Aes256Gcm::new(key);
 
                 let mut nonce_bytes = [0u8; 12];
-                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+                rand::rng().fill_bytes(&mut nonce_bytes);
                 let nonce = Nonce::from_slice(&nonce_bytes);
 
                 let ciphertext = cipher
@@ -303,18 +535,16 @@ impl BlobManager {
         }
 
         let manifest = self.load_manifest(blob_id_hex)?;
-        let blob_id = manifest.blob_id;
 
         let mut state = RetrievalState::new(manifest.clone());
 
         for (index, chunk_id) in manifest.chunk_ids.iter().enumerate() {
             let key = format!("ghost/blobs/chunks/{}", hex::encode(chunk_id));
-            if let Some(bytes) = self.store.get(&key) {
-                if let Ok(chunk) = postcard::from_bytes::<BlobChunk>(&bytes) {
-                    if let Ok(plaintext) = self.decrypt_chunk(&chunk) {
-                        state.received_chunks.insert(index as u32, plaintext);
-                    }
-                }
+            if let Some(bytes) = self.store.get(&key)
+                && let Ok(chunk) = postcard::from_bytes::<BlobChunk>(&bytes)
+                && let Ok(plaintext) = self.decrypt_chunk(&chunk)
+            {
+                state.received_chunks.insert(index as u32, plaintext);
             }
         }
 
@@ -377,7 +607,11 @@ impl BlobManager {
                     return Err(BlobError::Timeout);
                 }
 
-                if tokio::time::Instant::now().elapsed().as_secs() % 5 == 0 {
+                if tokio::time::Instant::now()
+                    .elapsed()
+                    .as_secs()
+                    .is_multiple_of(5)
+                {
                     self.request_missing_chunks(blob_id_hex, &manifest).await?;
                 }
             } else {

@@ -115,3 +115,9 @@ impl GhostStore for MemoryStore {
             .collect()
     }
 }
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}

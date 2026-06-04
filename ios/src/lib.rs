@@ -1,4 +1,5 @@
 use libghost::behavior::ClientBehavior;
+use libghost::blob::BlobError;
 use libghost::context::{ZRPContext, ZRPHandle};
 use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
 use libghost::identity::NodeIdentity as CoreIdentity;
@@ -48,6 +49,8 @@ pub enum MeshError {
     Timeout,
     #[error("Connection error: {msg}")]
     ConnectionError { msg: String },
+    #[error("Blob error: {msg}")]
+    BlobError { msg: String },
     #[error("Unknown error")]
     Unknown,
 }
@@ -64,6 +67,22 @@ impl From<Box<dyn std::error::Error>> for MeshError {
         }
     }
 }
+
+impl From<BlobError> for MeshError {
+    fn from(e: BlobError) -> Self {
+        match e {
+            BlobError::Timeout => MeshError::Timeout,
+            BlobError::NotFound => MeshError::ConnectionError {
+                msg: "Blob not found".into(),
+            },
+            other => MeshError::BlobError {
+                msg: other.to_string(),
+            },
+        }
+    }
+}
+
+// MARK: - SwiftEventHandler
 
 #[uniffi::export(callback_interface)]
 pub trait SwiftEventHandler: Send + Sync {
@@ -114,6 +133,8 @@ impl EventHandler for SwiftHandlerBridge {
     }
 }
 
+// MARK: - NodeIdentity
+
 #[derive(uniffi::Object)]
 pub struct NodeIdentity {
     inner: CoreIdentity,
@@ -121,6 +142,7 @@ pub struct NodeIdentity {
 
 #[uniffi::export]
 impl NodeIdentity {
+    /// Generate a fresh ephemeral identity (not persisted)
     #[uniffi::constructor]
     pub fn new() -> Self {
         Self {
@@ -128,6 +150,7 @@ impl NodeIdentity {
         }
     }
 
+    /// Load stable identity from store, or generate and persist a new one
     #[uniffi::constructor]
     pub fn load_or_generate(db_path: String) -> Self {
         let store: Arc<dyn GhostStore> = Arc::new(SqliteStore::new(&db_path));
@@ -149,6 +172,8 @@ impl Default for NodeIdentity {
     }
 }
 
+// MARK: - TransportConfig
+
 #[derive(uniffi::Object)]
 pub struct TransportConfig {
     inner: CoreConfig,
@@ -164,12 +189,15 @@ impl TransportConfig {
     }
 }
 
+// MARK: - MeshNode
+
 #[derive(uniffi::Object)]
 pub struct MeshNode {
     handle: Mutex<Option<ZRPHandle>>,
 }
 
 #[uniffi::export]
+#[allow(unused)]
 impl MeshNode {
     #[uniffi::constructor]
     pub async fn new(
@@ -213,6 +241,8 @@ impl MeshNode {
         })
     }
 
+    // MARK: - Messaging
+
     pub async fn subscribe(&self, topic: String) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.subscribe(topic).await;
@@ -231,6 +261,15 @@ impl MeshNode {
         }
     }
 
+    pub async fn send_raw(&self, topic: String, payload: Vec<u8>) -> Result<(), MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.publish(topic, payload).await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
+    }
+
     pub async fn unsubscribe(&self, topic: String) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.unsubscribe(topic).await;
@@ -240,12 +279,55 @@ impl MeshNode {
         }
     }
 
+    // MARK: - Blob storage
+
+    /// Upload bytes to the mesh. Returns blob_id as hex string.
+    /// Share this ID with recipients — they use it to retrieve.
+    pub async fn upload_blob(&self, data: Vec<u8>) -> Result<String, MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.upload_blob(data).await.map_err(MeshError::from)
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
+    }
+
+    /// Retrieve a blob by hex ID. Collects chunks from mesh peers.
+    /// Returns raw bytes — caller decodes (e.g. as JPEG).
+    pub async fn retrieve_blob(&self, blob_id: String) -> Result<Vec<u8>, MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.retrieve_blob(&blob_id).await.map_err(MeshError::from)
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
+    }
+
+    /// Bytes currently used by blob chunk storage on this device
+    pub async fn blob_storage_bytes(&self) -> u64 {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.blob_storage_bytes()
+        } else {
+            0
+        }
+    }
+
+    /// Evict chunks for blobs older than max_age_secs.
+    /// Call on app background / low storage warnings.
+    pub async fn evict_old_blobs(&self, max_age_secs: u64) {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            h.evict_old_blobs(max_age_secs);
+        }
+    }
+
+    // MARK: - Lifecycle
+
     pub async fn shutdown(&self) {
         if let Some(h) = self.handle.lock().await.take() {
             h.shutdown().await;
         }
     }
 }
+
+// MARK: - Relay discovery
 
 #[uniffi::export]
 pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
@@ -268,6 +350,8 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
         }
     })
 }
+
+// MARK: - Records
 
 #[derive(uniffi::Record)]
 pub struct RelayInfo {

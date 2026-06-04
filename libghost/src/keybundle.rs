@@ -1,6 +1,6 @@
 use crate::store::GhostStore;
+use aes_gcm::aead::OsRng;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
 use std::sync::Arc;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -27,34 +27,34 @@ pub struct PublicKeyBundle {
 
 impl KeyBundle {
     pub fn load_or_generate(store: &Arc<dyn GhostStore>) -> Self {
-        if let Some(identity_bytes) = store.get(IDENTITY_KEY) {
-            if let Some(spk_bytes) = store.get(SIGNED_PREKEY_KEY) {
-                if identity_bytes.len() == 32 && spk_bytes.len() == 32 {
-                    let mut identity_key = [0u8; 32];
-                    let mut signed_prekey = [0u8; 32];
-                    identity_key.copy_from_slice(&identity_bytes);
-                    signed_prekey.copy_from_slice(&spk_bytes);
+        if let Some(identity_bytes) = store.get(IDENTITY_KEY)
+            && let Some(spk_bytes) = store.get(SIGNED_PREKEY_KEY)
+            && identity_bytes.len() == 32
+            && spk_bytes.len() == 32
+        {
+            let mut identity_key = [0u8; 32];
+            let mut signed_prekey = [0u8; 32];
+            identity_key.copy_from_slice(&identity_bytes);
+            signed_prekey.copy_from_slice(&spk_bytes);
 
-                    let one_time_prekeys = store
-                        .list(PREKEY_STORE_PREFIX)
-                        .into_iter()
-                        .filter_map(|k| store.get(&k))
-                        .filter(|b| b.len() == 32)
-                        .map(|b| {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&b);
-                            arr
-                        })
-                        .collect();
+            let one_time_prekeys = store
+                .list(PREKEY_STORE_PREFIX)
+                .into_iter()
+                .filter_map(|k| store.get(&k))
+                .filter(|b| b.len() == 32)
+                .map(|b| {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&b);
+                    arr
+                })
+                .collect();
 
-                    tracing::info!("Loaded existing key bundle");
-                    return Self {
-                        identity_key,
-                        signed_prekey,
-                        one_time_prekeys,
-                    };
-                }
-            }
+            tracing::info!("Loaded existing key bundle");
+            return Self {
+                identity_key,
+                signed_prekey,
+                one_time_prekeys,
+            };
         }
 
         Self::generate(store)

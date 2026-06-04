@@ -45,14 +45,18 @@ pub struct XRFMessage {
 }
 
 impl XRFMessage {
-    pub fn new(_kb: &KeyBundle, payload: &[u8]) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub fn new(
+        _kb: &KeyBundle,
+        codec: u16,
+        payload: &[u8],
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let secure_random = SystemRandom::new();
         let mut nonce = [0u8; 12];
         secure_random.fill(&mut nonce)?;
         Ok(Self {
             r_header: RatchetHeader::new(),
             payload: payload.to_vec(),
-            codec: 0,
+            codec,
             nonce,
             x3dh_init: None,
             signature: Vec::new(),

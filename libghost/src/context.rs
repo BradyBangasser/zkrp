@@ -1,6 +1,7 @@
+use crate::blob::{BlobManager, BlobManifest, ChunkRequest, ChunkResponse, ChunkStoreRequest};
 use crate::relay::RelayClient;
 use crate::{
-    codec::Codec,
+    codec::{self, CONTENT_TYPE_TEXT, Codec},
     handler::{ConnectionStatus, DisconnectReason, EventHandler, SendFailReason, ZRPEvent},
     keybundle::KeyBundle,
     protocols::ghost::v0::{GhostEnvelope, GhostMessage, encode},
@@ -21,48 +22,6 @@ fn backoff_delay(attempt: u32) -> Option<Duration> {
     }
     let secs = (2u64.pow(attempt - 1)).min(60);
     Some(Duration::from_secs(secs))
-}
-
-pub fn storage_usage(&self) -> u64 {
-    self.store
-        .list("ghost/blobs/chunks/")
-        .into_iter()
-        .filter_map(|k| self.store.get(&k))
-        .map(|v| v.len() as u64)
-        .sum()
-}
-
-pub fn evict_old(&self, max_age_secs: u64) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let manifests = self.store.list("ghost/blobs/manifests/");
-    let mut evicted = 0usize;
-
-    for key in manifests {
-        if let Some(bytes) = self.store.get(&key) {
-            if let Ok(manifest) = postcard::from_bytes::<BlobManifest>(&bytes) {
-                if now.saturating_sub(manifest.created_at) > max_age_secs {
-                    for chunk_id in &manifest.chunk_ids {
-                        let chunk_key = format!("ghost/blobs/chunks/{}", hex::encode(chunk_id));
-                        self.store.delete(&chunk_key);
-                        evicted += 1;
-                    }
-                    self.store.delete(&format!(
-                        "ghost/blobs/cache/{}",
-                        hex::encode(manifest.blob_id)
-                    ));
-                    self.store.delete(&key);
-                }
-            }
-        }
-    }
-
-    if evicted > 0 {
-        tracing::info!("Evicted {} old chunks from blob storage", evicted);
-    }
 }
 
 struct PendingMessage {
@@ -89,196 +48,6 @@ impl From<&PendingMessage> for OutboxEntry {
             payload: m.payload.clone(),
             attempts: m.attempts,
         }
-    }
-}
-
-pub async fn handle_store_request(&self, request: ChunkStoreRequest, from_peer: &str) {
-    let chunk_id_hex = hex::encode(request.chunk.chunk_id);
-
-    match self.decrypt_chunk(&request.chunk) {
-        Ok(_plaintext) => {
-            // Hash matches
-        }
-        Err(BlobError::HashMismatch) => {
-            tracing::warn!(
-                "Chunk {} from {} failed hash verification — ignoring",
-                &chunk_id_hex[..8],
-                &from_peer[..8]
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("Chunk {} decryption error: {}", &chunk_id_hex[..8], e);
-            return;
-        }
-    }
-
-    let usage = self.storage_usage();
-    let max_bytes: u64 = 50 * 1024 * 1024; // TODO: CHANGE TO CONFIG LIMIT
-
-    if usage > max_bytes {
-        tracing::warn!(
-            "Blob storage full ({} MB), rejecting chunk from {}",
-            usage / 1024 / 1024,
-            &from_peer[..8]
-        );
-        let ack = ChunkStoreAck {
-            chunk_id: request.chunk.chunk_id,
-            stored: false,
-        };
-        let topic = format!("ghost/blobs/store/{}", from_peer);
-        if let Ok(payload) = postcard::to_allocvec(&ack) {
-            self.handle.publish(topic, payload).await;
-        }
-        return;
-    }
-
-    let key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
-    match postcard::to_allocvec(&request.chunk) {
-        Ok(bytes) => {
-            self.store.set(&key, bytes);
-            tracing::debug!(
-                "Stored chunk {} for peer {}",
-                &chunk_id_hex[..8],
-                &from_peer[..8]
-            );
-        }
-        Err(e) => {
-            tracing::warn!("Failed to serialize chunk: {}", e);
-            return;
-        }
-    }
-
-    let ack = ChunkStoreAck {
-        chunk_id: request.chunk.chunk_id,
-        stored: true,
-    };
-    let topic = format!("ghost/blobs/store/{}", from_peer);
-    if let Ok(payload) = postcard::to_allocvec(&ack) {
-        self.handle.publish(topic, payload).await;
-    }
-}
-
-pub async fn handle_chunk_request(&self, request: ChunkRequest, from_peer: &str) {
-    let chunk_id_hex = hex::encode(request.chunk_id);
-    let key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
-
-    let response = match self.store.get(&key) {
-        Some(bytes) => match postcard::from_bytes::<BlobChunk>(&bytes) {
-            Ok(chunk) => {
-                tracing::debug!(
-                    "Serving chunk {} to peer {}",
-                    &chunk_id_hex[..8],
-                    &from_peer[..8]
-                );
-                ChunkResponse { chunk, found: true }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to deserialize chunk {}: {}", &chunk_id_hex[..8], e);
-                ChunkResponse {
-                    chunk: BlobChunk {
-                        blob_id: request.blob_id,
-                        chunk_index: 0,
-                        chunk_id: request.chunk_id,
-                        ciphertext: vec![],
-                        nonce: [0u8; 12],
-                    },
-                    found: false,
-                }
-            }
-        },
-        None => {
-            tracing::debug!(
-                "Don't have chunk {} requested by {}",
-                &chunk_id_hex[..8],
-                &from_peer[..8]
-            );
-            ChunkResponse {
-                chunk: BlobChunk {
-                    blob_id: request.blob_id,
-                    chunk_index: 0,
-                    chunk_id: request.chunk_id,
-                    ciphertext: vec![],
-                    nonce: [0u8; 12],
-                },
-                found: false,
-            }
-        }
-    };
-
-    let topic = format!("ghost/blobs/store/{}", from_peer);
-    if let Ok(payload) = postcard::to_allocvec(&response) {
-        self.handle.publish(topic, payload).await;
-    }
-}
-
-pub async fn handle_chunk_response(&self, response: ChunkResponse, from_peer: &str) {
-    if !response.found {
-        tracing::debug!(
-            "Peer {} doesn't have chunk {}",
-            &from_peer[..8],
-            &hex::encode(response.chunk.chunk_id)[..8]
-        );
-        return;
-    }
-
-    let chunk_id_hex = hex::encode(response.chunk.chunk_id);
-    let blob_id_hex = hex::encode(response.chunk.blob_id);
-
-    let plaintext = match self.decrypt_chunk(&response.chunk) {
-        Ok(p) => p,
-        Err(BlobError::HashMismatch) => {
-            tracing::warn!(
-                "Chunk {} from {} failed verification",
-                &chunk_id_hex[..8],
-                &from_peer[..8]
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("Chunk decryption error: {}", e);
-            return;
-        }
-    };
-
-    let store_key = format!("ghost/blobs/chunks/{}", chunk_id_hex);
-    if let Ok(bytes) = postcard::to_allocvec(&response.chunk) {
-        self.store.set(&store_key, bytes);
-    }
-
-    let mut retrievals = self.retrievals.lock().await;
-    if let Some(state) = retrievals.get_mut(&blob_id_hex) {
-        state
-            .received_chunks
-            .insert(response.chunk.chunk_index, plaintext);
-
-        let received = state.received_chunks.len();
-        let total = state.manifest.chunk_ids.len();
-
-        tracing::debug!(
-            "Blob {} progress: {}/{} chunks",
-            &blob_id_hex[..8],
-            received,
-            total
-        );
-    }
-}
-
-pub async fn handle_manifest(&self, manifest: BlobManifest) {
-    let blob_id_hex = hex::encode(manifest.blob_id);
-    let key = format!("ghost/blobs/manifests/{}", blob_id_hex);
-
-    if self.store.get(&key).is_some() {
-        return;
-    }
-
-    if let Ok(bytes) = postcard::to_allocvec(&manifest) {
-        self.store.set(&key, bytes);
-        tracing::debug!(
-            "Stored manifest for blob {} from {}",
-            &blob_id_hex[..8],
-            &manifest.sender_peer_id[..8]
-        );
     }
 }
 
@@ -451,6 +220,7 @@ async fn load_key_bundle(store: &Arc<dyn GhostStore>) -> KeyBundle {
     KeyBundle::load_or_generate(store)
 }
 
+#[allow(unused)]
 async fn crypto_task(
     mut raw_rx: mpsc::Receiver<RawEvent>,
     mut crypto_rx: mpsc::Receiver<SwarmCommand>,
@@ -458,110 +228,153 @@ async fn crypto_task(
     handlers: Arc<Mutex<HashMap<String, Arc<dyn EventHandler>>>>,
     codecs: Arc<Mutex<HashMap<u16, Codec>>>,
     store: Arc<dyn GhostStore>,
-    blob_manager: Arc<crate::blob::BlobManager>,
+    blob_manager: Arc<BlobManager>, // ADD
 ) {
     let kb = load_key_bundle(&store).await;
 
     loop {
         tokio::select! {
             Some(event) = raw_rx.recv() => {
-                let e: ZRPEvent = match event {
+                match event {
                     RawEvent::GossipMessage { bytes, propagation_src, topic } => {
+
+                        // Decode envelope
                         let envelope = match GhostEnvelope::decode(bytes.as_ref()) {
                             Ok(e) => e,
                             Err(e) => {
-                                tracing::warn!("failed to decode envelope: {e}");
+                                tracing::warn!("Failed to decode envelope: {}", e);
                                 continue;
                             }
                         };
+
+                        // Decode message
                         let msg: GhostMessage = match postcard::from_bytes(&envelope.payload) {
                             Ok(m) => m,
                             Err(e) => {
-                                tracing::warn!("failed to deserialize message: {e}");
+                                tracing::warn!("Failed to deserialize message: {}", e);
                                 continue;
                             }
                         };
 
-                        let peer_str = propagation_src.to_string();
+                        let peer_id_str = propagation_src.to_string();
 
                         match msg.codec {
-                            0x0050 => {
-                                if let Ok(req) = postcard::from_bytes::<crate::blob::ChunkStoreRequest>(&msg.payload) {
-                                    blob_manager.handle_store_request(req, &peer_str).await;
+
+                            codec::CONTENT_TYPE_CHUNK_STORE => {
+                                if let Ok(req) = postcard::from_bytes::<ChunkStoreRequest>(&msg.payload) {
+                                    blob_manager.handle_store_request(req, &peer_id_str).await;
+                                }
+                                continue;  // don't emit ZRPEvent for blob messages
+                            }
+
+                            codec::CONTENT_TYPE_CHUNK_REQUEST => {
+                                if let Ok(req) = postcard::from_bytes::<ChunkRequest>(&msg.payload) {
+                                    blob_manager.handle_chunk_request(req, &peer_id_str).await;
                                 }
                                 continue;
                             }
-                            0x0051 => {
-                                continue;
-                            }
-                            0x0052 => {
-                                if let Ok(req) = postcard::from_bytes::<crate::blob::ChunkRequest>(&msg.payload) {
-                                    blob_manager.handle_chunk_request(req, &peer_str).await;
+
+                            codec::CONTENT_TYPE_CHUNK_RESPONSE => {
+                                if let Ok(resp) = postcard::from_bytes::<ChunkResponse>(&msg.payload) {
+                                    blob_manager.handle_chunk_response(resp, &peer_id_str).await;
                                 }
                                 continue;
                             }
-                            0x0053 => {
-                                if let Ok(resp) = postcard::from_bytes::<crate::blob::ChunkResponse>(&msg.payload) {
-                                    blob_manager.handle_chunk_response(resp, &peer_str).await;
-                                }
-                                continue;
-                            }
-                            0x0054 => {
-                                if let Ok(manifest) = postcard::from_bytes::<crate::blob::BlobManifest>(&msg.payload) {
+
+                            codec::CONTENT_TYPE_BLOB_MANIFEST => {
+                                if let Ok(manifest) = postcard::from_bytes::<BlobManifest>(&msg.payload) {
                                     blob_manager.handle_manifest(manifest).await;
                                 }
                                 continue;
                             }
+
                             _ => {}
                         }
 
-                        ZRPEvent::Message {
+                        let e = ZRPEvent::Message {
                             conversation: topic,
                             peer_id: propagation_src,
                             content_type: msg.codec,
                             payload: msg.payload.clone(),
+                        };
+
+                        let event = Arc::new(e);
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = event.clone();
+                            tokio::spawn(async move { h.handle(&e) });
                         }
                     }
 
                     RawEvent::PeerDiscovered { peer_id, addr } => {
+                        // Notify blob manager of new peer
                         blob_manager.on_peer_connected(peer_id.to_string()).await;
-                        ZRPEvent::PeerConnected { peer_id, addr }
+
+                        let e = Arc::new(ZRPEvent::PeerConnected { peer_id, addr });
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = e.clone();
+                            tokio::spawn(async move { h.handle(&e) });
+                        }
                     }
+
                     RawEvent::PeerLost { peer_id } => {
+                        // Notify blob manager peer is gone
                         blob_manager.on_peer_disconnected(&peer_id.to_string()).await;
-                        ZRPEvent::PeerDisconnected {
+
+                        let e = Arc::new(ZRPEvent::PeerDisconnected {
                             peer_id,
                             reason: DisconnectReason::Clean,
+                        });
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = e.clone();
+                            tokio::spawn(async move { h.handle(&e) });
                         }
                     }
+
                     RawEvent::RelayAccepted { relay_addr } => {
-                        ZRPEvent::ConnectionStatus(ConnectionStatus::Connected { relay: relay_addr })
+                        let e = Arc::new(ZRPEvent::ConnectionStatus(
+                            ConnectionStatus::Connected { relay: relay_addr }
+                        ));
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = e.clone();
+                            tokio::spawn(async move { h.handle(&e) });
+                        }
                     }
+
                     RawEvent::RelayLost => {
-                        ZRPEvent::ConnectionStatus(ConnectionStatus::Disconnected)
+                        let e = Arc::new(ZRPEvent::ConnectionStatus(
+                            ConnectionStatus::Disconnected
+                        ));
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = e.clone();
+                            tokio::spawn(async move { h.handle(&e) });
+                        }
                     }
+
                     RawEvent::PublishFailed { topic_hash } => {
-                        ZRPEvent::MessageSendFailed {
+                        let e = Arc::new(ZRPEvent::MessageSendFailed {
                             conversation: topic_hash,
                             reason: SendFailReason::NoPeersSubscribed,
+                        });
+                        for handler in handlers.lock().await.values() {
+                            let h = handler.clone();
+                            let e = e.clone();
+                            tokio::spawn(async move { h.handle(&e) });
                         }
                     }
-                };
-
-                let event = Arc::new(e);
-                for handler in handlers.lock().await.values() {
-                    let h = handler.clone();
-                    let e = event.clone();
-                    tokio::spawn(async move { h.handle(&e) });
                 }
             }
 
             Some(cmd) = crypto_rx.recv() => {
                 match cmd {
                     SwarmCommand::Publish { topic_hash, payload } => {
-                        if let Ok(message) = GhostMessage::new(&kb, &payload) {
-                            let msg_bytes = postcard::to_allocvec(&message).unwrap();
-                            let envelope = encode(&msg_bytes);
+                        if let Ok(message) = GhostMessage::new(&kb, CONTENT_TYPE_TEXT, &payload) {
+                            let payload = postcard::to_allocvec(&message).unwrap();
+                            let envelope = encode(&payload);
                             let mut encoded = Vec::new();
                             envelope.encode(&mut encoded).unwrap();
                             let _ = swarm_tx.send(SwarmCommand::Publish {
@@ -624,6 +437,7 @@ pub(crate) enum RawEvent {
 #[derive(Clone)]
 pub struct ZRPHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
+    blob_manager: Option<Arc<BlobManager>>,
 }
 
 impl ZRPHandle {
@@ -667,12 +481,29 @@ impl ZRPHandle {
 
         Ok(relays.into_iter().map(|r| r.multiaddr).collect())
     }
+
+    pub async fn upload_blob(&self, data: Vec<u8>) -> Result<String, crate::blob::BlobError> {
+        self.blob_manager.as_ref().unwrap().upload(data).await
+    }
+
+    pub async fn retrieve_blob(&self, blob_id: &str) -> Result<Vec<u8>, crate::blob::BlobError> {
+        self.blob_manager.as_ref().unwrap().retrieve(blob_id).await
+    }
+
+    pub fn blob_storage_bytes(&self) -> u64 {
+        self.blob_manager.as_ref().unwrap().storage_usage()
+    }
+
+    pub fn evict_old_blobs(&self, max_age_secs: u64) {
+        self.blob_manager.clone().unwrap().evict_old(max_age_secs);
+    }
 }
 
 pub struct ZRPContext {
     codecs: Arc<Mutex<HashMap<u16, Codec>>>,
     handlers: Arc<Mutex<HashMap<String, Arc<dyn EventHandler>>>>,
     store: Arc<dyn GhostStore>,
+    blob_manager: Option<Arc<BlobManager>>,
 }
 
 impl ZRPContext {
@@ -694,6 +525,10 @@ impl ZRPContext {
     pub fn remove_handler(&mut self, name: &str) {
         let mut handlers = self.handlers.blocking_lock();
         handlers.remove(name);
+    }
+
+    pub fn blob_manager(&self) -> Option<Arc<BlobManager>> {
+        self.blob_manager.clone()
     }
 
     pub async fn start<B, F>(
@@ -731,6 +566,17 @@ impl ZRPContext {
         let (swarm_tx, swarm_rx) = mpsc::channel::<SwarmCommand>(32);
         let (raw_tx, raw_rx) = mpsc::channel::<RawEvent>(64);
 
+        let store_handle = ZRPHandle {
+            cmd_tx: crypto_tx.clone(),
+            blob_manager: None,
+        };
+
+        let blob_manager = Arc::new(BlobManager::new(
+            Arc::clone(&self.store),
+            store_handle,
+            identity.peer_id_string(),
+        ));
+
         let swarm = libp2p::SwarmBuilder::with_existing_identity(identity.keypair)
             .with_tokio()
             .with_tcp(
@@ -765,9 +611,13 @@ impl ZRPContext {
             handlers,
             codecs,
             Arc::clone(&self.store),
+            Arc::clone(&blob_manager),
         ));
 
-        Ok(ZRPHandle { cmd_tx: crypto_tx })
+        Ok(ZRPHandle {
+            cmd_tx: crypto_tx,
+            blob_manager: Some(blob_manager),
+        })
     }
 
     pub fn with_store(store: Arc<dyn GhostStore>) -> Self {
@@ -777,6 +627,7 @@ impl ZRPContext {
             codecs: Arc::new(Mutex::new(codecs)),
             handlers: Arc::new(Mutex::new(HashMap::new())),
             store,
+            blob_manager: None,
         }
     }
 }
@@ -791,6 +642,7 @@ impl Default for ZRPContext {
             codecs: Arc::new(Mutex::new(codecs)),
             handlers: Arc::new(Mutex::new(HashMap::new())),
             store: Arc::new(crate::store::MemoryStore::new()),
+            blob_manager: None,
         }
     }
 }
