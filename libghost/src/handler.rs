@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio::sync::mpsc::Sender;
+
+use crate::context::SwarmCommand;
+
 #[derive(Debug, Clone)]
 pub enum ZRPEvent {
     PeerConnected {
@@ -116,12 +120,13 @@ pub enum DecryptFailReason {
     MessageIndexTooOld,
 }
 
+#[allow(unused)]
 pub trait EventHandler: Send + Sync + 'static {
-    fn handle(&self, _event: &ZRPEvent) -> bool {
+    fn handle(&self, event: &ZRPEvent, mut handle: Sender<SwarmCommand>) -> bool {
         true
     }
 
-    fn filter(&self, _event: &ZRPEvent) -> bool {
+    fn filter(&self, event: &ZRPEvent) -> bool {
         true
     }
 }
@@ -146,7 +151,7 @@ impl HandlerRegistry {
         self.handlers.remove(name);
     }
 
-    pub async fn dispatch(&mut self, event: ZRPEvent) {
+    pub async fn dispatch(&mut self, event: ZRPEvent, crypt_tx: Sender<SwarmCommand>) {
         let event = Arc::new(event);
         let mut to_remove = vec![];
 
@@ -159,8 +164,9 @@ impl HandlerRegistry {
             let h = handler.clone();
             let e = event.clone();
             let n = name.clone();
+            let tx = crypt_tx.clone();
             join_set.spawn(async move {
-                let keep = h.handle(&e);
+                let keep = h.handle(&e, tx);
                 (n, keep)
             });
         }

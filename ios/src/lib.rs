@@ -1,6 +1,6 @@
 use libghost::behavior::ClientBehavior;
 use libghost::blob::BlobError;
-use libghost::context::{ZRPContext, ZRPHandle};
+use libghost::context::{SwarmCommand, ZRPContext, ZRPHandle};
 use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
 use libghost::identity::NodeIdentity as CoreIdentity;
 use libghost::store::{GhostStore, SqliteStore};
@@ -9,6 +9,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+pub const CONTENT_TYPE_PROFILE: u16 = 0x0010;
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME
@@ -82,6 +83,17 @@ impl From<BlobError> for MeshError {
     }
 }
 
+#[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
+pub struct PeerProfile {
+    pub peer_id: String,
+    pub name: String,
+    pub college: String,
+    pub year: String,
+    pub bio: String,
+    pub photo_blob_ids: Vec<String>,
+    pub timestamp: u64,
+}
+
 // MARK: - SwiftEventHandler
 
 #[uniffi::export(callback_interface)]
@@ -91,26 +103,51 @@ pub trait SwiftEventHandler: Send + Sync {
     fn on_peer_disconnected(&self, peer_id: String);
     fn on_connection_status(&self, status: String);
     fn on_send_failed(&self, conversation: String);
+    fn on_profile_received(&self, profile: PeerProfile);
 }
 
+#[derive(Clone)]
 struct SwiftHandlerBridge {
     inner: Arc<dyn SwiftEventHandler>,
+    // handle: Option<Arc<std::sync::Mutex<ZRPHandle>>>,
+    profile: Arc<std::sync::Mutex<PeerProfile>>,
 }
 
 impl EventHandler for SwiftHandlerBridge {
-    fn handle(&self, event: &ZRPEvent) -> bool {
+    fn handle(&self, event: &ZRPEvent, tx: tokio::sync::mpsc::Sender<SwarmCommand>) -> bool {
         match event {
             ZRPEvent::Message {
                 conversation,
                 payload,
                 content_type,
+                peer_id,
                 ..
-            } => {
-                self.inner
-                    .on_message(conversation.clone(), payload.clone(), *content_type);
-            }
+            } => match content_type {
+                0x0010 => {
+                    if let Ok(profile) = postcard::from_bytes::<PeerProfile>(payload) {
+                        self.inner.on_profile_received(profile.clone());
+
+                        let our_profile = self.profile.lock().unwrap().clone();
+                        let reply_topic = format!("fratrat/v1/profiles/dm/{}", peer_id);
+                        let payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
+                        tokio::spawn(async move {
+                            ZRPHandle::send(tx, reply_topic, payload).await;
+                        });
+                    }
+                }
+                _ => {
+                    self.inner
+                        .on_message(conversation.clone(), payload.clone(), *content_type);
+                }
+            },
             ZRPEvent::PeerConnected { peer_id, .. } => {
                 self.inner.on_peer_connected(peer_id.to_string());
+
+                let our_profile = self.profile.lock().unwrap().clone();
+                let payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
+                tokio::spawn(async move {
+                    ZRPHandle::send(tx, "fratrat/v1/profiles".to_string(), payload).await;
+                });
             }
             ZRPEvent::PeerDisconnected { peer_id, .. } => {
                 self.inner.on_peer_disconnected(peer_id.to_string());
@@ -142,7 +179,6 @@ pub struct NodeIdentity {
 
 #[uniffi::export]
 impl NodeIdentity {
-    /// Generate a fresh ephemeral identity (not persisted)
     #[uniffi::constructor]
     pub fn new() -> Self {
         Self {
@@ -150,7 +186,6 @@ impl NodeIdentity {
         }
     }
 
-    /// Load stable identity from store, or generate and persist a new one
     #[uniffi::constructor]
     pub fn load_or_generate(db_path: String) -> Self {
         let store: Arc<dyn GhostStore> = Arc::new(SqliteStore::new(&db_path));
@@ -205,14 +240,16 @@ impl MeshNode {
         relay_addr: String,
         config: Arc<TransportConfig>,
         handler: Box<dyn SwiftEventHandler>,
+        profile: PeerProfile,
     ) -> Result<Self, MeshError> {
         let core_identity = CoreIdentity::from_keypair_bytes(&identity.inner.to_keypair_bytes())
             .map_err(MeshError::from)?;
 
         let core_config = CoreConfig::with_ports(config.inner.tcp_port, config.inner.quic_port);
 
-        let bridge = SwiftHandlerBridge {
+        let mut bridge = SwiftHandlerBridge {
             inner: Arc::from(handler),
+            profile: Arc::new(std::sync::Mutex::new(profile)),
         };
 
         let db_path = ghost_db_path();
@@ -235,6 +272,12 @@ impl MeshNode {
             .await
             .map_err(|_| MeshError::Unknown)?
             .map_err(|e| MeshError::ConnectionError { msg: e })?;
+
+        let my_peer_id = identity.peer_id_string();
+        handle
+            .subscribe(format!("fratrat/v1/profiles/dm/{}", my_peer_id))
+            .await;
+        handle.subscribe("fratrat/v1/profiles".to_string()).await;
 
         Ok(Self {
             handle: Mutex::new(Some(handle)),

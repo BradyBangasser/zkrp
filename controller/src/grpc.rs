@@ -70,35 +70,31 @@ impl RelayService for RelayServiceImpl {
     }
 
     async fn list_relays(&self, req: Request<()>) -> Result<Response<RelayListResponse>, Status> {
-        let mut base_addr = "/".to_owned();
-
-        if let Some(local_addr) = req.local_addr() {
-            let ip = local_addr.ip();
-
-            if ip.is_ipv4() {
-                base_addr.push_str("ip4/");
-            } else if ip.is_ipv6() {
-                base_addr.push_str("ip6/");
-            } else {
-                return Err(Status::unknown("Local IP is not v4/v6"));
-            }
-
-            base_addr.push_str(&ip.to_string());
-            base_addr.push_str("/tcp/");
-            base_addr.push_str(&self.state.port.to_string());
-            base_addr.push_str("/p2p/");
-            base_addr.push_str(&self.state.peer_id);
+        let ip_str = if let Ok(public_ip) = std::env::var("PUBLIC_IP") {
+            public_ip
+        } else if let Some(remote_addr) = req.remote_addr() {
+            remote_addr.ip().to_string()
         } else {
-            return Err(Status::unknown("Local address cannot be determined"));
-        }
+            return Err(Status::unknown(
+                "Cannot determine public IP — set PUBLIC_IP env var",
+            ));
+        };
+
+        let is_ipv6 = ip_str.contains(':');
+        let prefix = if is_ipv6 { "ip6" } else { "ip4" };
+
+        let multiaddr = format!(
+            "/{}/{}/tcp/{}/p2p/{}",
+            prefix, ip_str, self.state.port, self.state.peer_id
+        );
 
         Ok(Response::new(RelayListResponse {
             relays: vec![RelayInfo {
                 peer_id: self.state.peer_id.clone(),
-                meshes: vec![],
+                meshes: vec!["fratrat-v1".to_string()],
                 region: std::env::var("REGION").unwrap_or_else(|_| "local".to_string()),
                 load: self.state.connected_peers.lock().await.len() as u32,
-                multiaddr: base_addr,
+                multiaddr,
                 port: self.state.port,
                 ..Default::default()
             }],

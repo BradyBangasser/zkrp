@@ -225,10 +225,11 @@ async fn crypto_task(
     mut raw_rx: mpsc::Receiver<RawEvent>,
     mut crypto_rx: mpsc::Receiver<SwarmCommand>,
     swarm_tx: mpsc::Sender<SwarmCommand>,
+    crypto_tx: mpsc::Sender<SwarmCommand>,
     handlers: Arc<Mutex<HashMap<String, Arc<dyn EventHandler>>>>,
     codecs: Arc<Mutex<HashMap<u16, Codec>>>,
     store: Arc<dyn GhostStore>,
-    blob_manager: Arc<BlobManager>, // ADD
+    blob_manager: Arc<BlobManager>,
 ) {
     let kb = load_key_bundle(&store).await;
 
@@ -264,7 +265,7 @@ async fn crypto_task(
                                 if let Ok(req) = postcard::from_bytes::<ChunkStoreRequest>(&msg.payload) {
                                     blob_manager.handle_store_request(req, &peer_id_str).await;
                                 }
-                                continue;  // don't emit ZRPEvent for blob messages
+                                continue;
                             }
 
                             codec::CONTENT_TYPE_CHUNK_REQUEST => {
@@ -302,7 +303,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = event.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
 
@@ -314,7 +316,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = e.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
 
@@ -329,7 +332,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = e.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
 
@@ -340,7 +344,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = e.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
 
@@ -351,7 +356,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = e.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
 
@@ -363,7 +369,8 @@ async fn crypto_task(
                         for handler in handlers.lock().await.values() {
                             let h = handler.clone();
                             let e = e.clone();
-                            tokio::spawn(async move { h.handle(&e) });
+                            let tx = crypto_tx.clone();
+                            tokio::spawn(async move { h.handle(&e, tx) });
                         }
                     }
                 }
@@ -397,7 +404,7 @@ async fn crypto_task(
     }
 }
 
-pub(crate) enum SwarmCommand {
+pub enum SwarmCommand {
     Publish {
         topic_hash: String,
         payload: Vec<u8>,
@@ -441,14 +448,18 @@ pub struct ZRPHandle {
 }
 
 impl ZRPHandle {
-    pub async fn publish(&self, topic_hash: String, payload: Vec<u8>) {
-        let _ = self
-            .cmd_tx
+    pub async fn send(cmd_tx: mpsc::Sender<SwarmCommand>, topic_hash: String, payload: Vec<u8>) {
+        cmd_tx
             .send(SwarmCommand::Publish {
                 topic_hash,
                 payload,
             })
-            .await;
+            .await
+            .unwrap();
+    }
+
+    pub async fn publish(&self, topic_hash: String, payload: Vec<u8>) {
+        Self::send(self.cmd_tx.clone(), topic_hash, payload).await;
     }
 
     pub async fn subscribe(&self, topic_hash: String) {
@@ -608,6 +619,7 @@ impl ZRPContext {
             raw_rx,
             crypto_rx,
             swarm_tx,
+            crypto_tx.clone(),
             handlers,
             codecs,
             Arc::clone(&self.store),
