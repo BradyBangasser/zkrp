@@ -98,7 +98,13 @@ pub struct PeerProfile {
 
 #[uniffi::export(callback_interface)]
 pub trait SwiftEventHandler: Send + Sync {
-    fn on_message(&self, conversation: String, payload: Vec<u8>, content_type: u16);
+    fn on_message(
+        &self,
+        peer_id: String,
+        conversation: String,
+        payload: Vec<u8>,
+        content_type: u16,
+    );
     fn on_peer_connected(&self, peer_id: String);
     fn on_peer_disconnected(&self, peer_id: String);
     fn on_connection_status(&self, status: String);
@@ -136,8 +142,12 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
                 _ => {
-                    self.inner
-                        .on_message(conversation.clone(), payload.clone(), *content_type);
+                    self.inner.on_message(
+                        peer_id.to_string(),
+                        conversation.clone(),
+                        payload.clone(),
+                        *content_type,
+                    );
                 }
             },
             ZRPEvent::PeerConnected { peer_id, .. } => {
