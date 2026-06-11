@@ -7,6 +7,7 @@ use crate::{
     protocols::ghost::v0::{GhostEnvelope, GhostMessage, encode},
     store::GhostStore,
 };
+use libp2p::Multiaddr;
 use prost::Message;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -180,7 +181,16 @@ async fn swarm_task<B>(
                     }).await;
                 }
                 SwarmEvent::ConnectionEstablished { .. } => {
-                    // dial circuit if this is a relay
+                    for relay in &relay_addrs {
+                        let addr: libp2p::Multiaddr = match relay.parse() {
+                            Ok(a) => a,
+                            Err(e) => {
+                                tracing::warn!("Invalid relay addr {}: {}", relay, e);
+                                continue;
+                            }
+                        };
+                        let _ = swarm.dial(addr);
+                    }
                 }
                 _ => {}
             }

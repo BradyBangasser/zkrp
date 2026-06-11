@@ -88,6 +88,8 @@ impl RelayService for RelayServiceImpl {
             prefix, ip_str, self.state.port, self.state.peer_id
         );
 
+        println!("{}", req.remote_addr().unwrap());
+
         Ok(Response::new(RelayListResponse {
             relays: vec![RelayInfo {
                 peer_id: self.state.peer_id.clone(),
