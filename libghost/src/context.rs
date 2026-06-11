@@ -66,6 +66,9 @@ async fn swarm_task<B>(
     use futures::StreamExt;
     use libp2p::swarm::SwarmEvent;
 
+    let mut circuit_reserved: std::collections::HashSet<libp2p::PeerId> =
+        std::collections::HashSet::new();
+
     let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
     let mut outbox: Vec<PendingMessage> = store
         .list("ghost/outbox/")
@@ -175,23 +178,39 @@ async fn swarm_task<B>(
                     }
                 }
                 SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                    circuit_reserved.remove(&peer_id);
                     tracing::info!("Connection closed: {} cause: {:?}", peer_id, cause);
                     let _ = raw_tx.send(RawEvent::PeerLost {
                         peer_id
                     }).await;
                 }
-                SwarmEvent::ConnectionEstablished { .. } => {
-                    for relay in &relay_addrs {
-                        let addr: libp2p::Multiaddr = match relay.parse() {
-                            Ok(a) => a,
-                            Err(e) => {
-                                tracing::warn!("Invalid relay addr {}: {}", relay, e);
-                                continue;
+
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    if !circuit_reserved.contains(&peer_id) {
+                        let circuit_addr = relay_addrs.iter().find_map(|r| {
+                            let ma = r.parse::<libp2p::Multiaddr>().ok()?;
+                            let has_peer = ma.iter().any(|p| {
+                                matches!(p, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
+                            });
+                            if has_peer { Some(ma) } else { None }
+                        });
+
+                        if let Some(ma) = circuit_addr {
+                            circuit_reserved.insert(peer_id);
+                            let circuit = format!("{}/p2p-circuit", ma);
+                            match circuit.parse::<libp2p::Multiaddr>() {
+                                Ok(addr) => {
+                                    tracing::info!("Requesting circuit reservation via {}", addr);
+                                    if let Err(e) = swarm.dial(addr) {
+                                        tracing::warn!("Circuit dial failed: {}", e);
+                                    }
+                                }
+                                Err(e) => tracing::warn!("Invalid circuit addr: {}", e),
                             }
-                        };
-                        let _ = swarm.dial(addr);
+                        }
                     }
                 }
+
                 _ => {}
             }
         }
