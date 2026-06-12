@@ -20,7 +20,9 @@ pub struct RelayState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .init();
 
     let identity = NodeIdentity::generate();
     let port = std::env::var("PORT")
@@ -58,7 +60,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         port: port.into(),
     };
 
-    // Spawn gRPC — shares state via Arc clones
     let grpc_state = state.clone();
     tokio::spawn(async move {
         if let Err(e) = grpc::serve(grpc_port, grpc_state).await {

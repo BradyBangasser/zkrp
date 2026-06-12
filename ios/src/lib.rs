@@ -5,11 +5,22 @@ use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
 use libghost::identity::NodeIdentity as CoreIdentity;
 use libghost::store::{GhostStore, SqliteStore};
 use libghost::transport::TransportConfig as CoreConfig;
+use std::sync::Once;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 pub const CONTENT_TYPE_PROFILE: u16 = 0x0010;
+
+static INIT_LOGGING: Once = Once::new();
+
+fn init_logging() {
+    INIT_LOGGING.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
+    });
+}
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RUNTIME
@@ -252,6 +263,7 @@ impl MeshNode {
         handler: Box<dyn SwiftEventHandler>,
         profile: PeerProfile,
     ) -> Result<Self, MeshError> {
+        init_logging();
         let core_identity = CoreIdentity::from_keypair_bytes(&identity.inner.to_keypair_bytes())
             .map_err(MeshError::from)?;
 

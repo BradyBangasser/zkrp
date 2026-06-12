@@ -1,4 +1,5 @@
 use crate::RelayState;
+use std::net::{IpAddr, UdpSocket};
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use tokio_stream::StreamExt;
@@ -19,6 +20,16 @@ type WatchStatsStream = Pin<Box<dyn futures::Stream<Item = Result<StatsResponse,
 
 pub struct RelayServiceImpl {
     state: RelayState,
+}
+
+fn local_ip_for_remote(remote: IpAddr) -> Option<IpAddr> {
+    let bind_addr = match remote {
+        IpAddr::V4(_) => "0.0.0.0:0",
+        IpAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_addr).ok()?;
+    socket.connect((remote, 9000)).ok()?;
+    Some(socket.local_addr().ok()?.ip())
 }
 
 #[tonic::async_trait]
@@ -70,25 +81,41 @@ impl RelayService for RelayServiceImpl {
     }
 
     async fn list_relays(&self, req: Request<()>) -> Result<Response<RelayListResponse>, Status> {
-        let ip_str = if let Ok(public_ip) = std::env::var("PUBLIC_IP") {
-            public_ip
-        } else if let Some(remote_addr) = req.remote_addr() {
-            remote_addr.ip().to_string()
+        let (host_str, is_domain) = if let Ok(public) = std::env::var("PUBLIC_IP") {
+            let is_domain = public.parse::<IpAddr>().is_err();
+            (public, is_domain)
+        } else if let Some(remote) = req.remote_addr() {
+            match local_ip_for_remote(remote.ip()) {
+                Some(ip) => (ip.to_string(), false),
+                None => {
+                    tracing::warn!(
+                        "Could not determine local route to {} — falling back to loopback",
+                        remote.ip()
+                    );
+                    ("127.0.0.1".to_string(), false)
+                }
+            }
         } else {
-            return Err(Status::unknown(
-                "Cannot determine public IP — set PUBLIC_IP env var",
-            ));
+            tracing::warn!("No remote_addr on request — falling back to loopback");
+            ("127.0.0.1".to_string(), false)
         };
 
-        let is_ipv6 = ip_str.contains(':');
-        let prefix = if is_ipv6 { "ip6" } else { "ip4" };
+        let prefix = if is_domain {
+            "dns4"
+        } else {
+            match host_str.parse::<IpAddr>() {
+                Ok(IpAddr::V4(_)) => "ip4",
+                Ok(IpAddr::V6(_)) => "ip6",
+                Err(_) => "dns4",
+            }
+        };
 
         let multiaddr = format!(
             "/{}/{}/tcp/{}/p2p/{}",
-            prefix, ip_str, self.state.port, self.state.peer_id
+            prefix, host_str, self.state.port, self.state.peer_id
         );
 
-        println!("{}", req.remote_addr().unwrap());
+        tracing::debug!("list_relays → advertising {}", multiaddr);
 
         Ok(Response::new(RelayListResponse {
             relays: vec![RelayInfo {
