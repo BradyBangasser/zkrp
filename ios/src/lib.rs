@@ -283,7 +283,7 @@ impl MeshNode {
                 ctx.register_handler("swift", bridge).await;
                 ctx.start(
                     core_identity,
-                    None,
+                    Some(vec![relay_addr]),
                     None,
                     core_config,
                     |key, relay_client| ClientBehavior::new(key.public(), relay_client, key),
