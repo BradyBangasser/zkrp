@@ -7,7 +7,7 @@ use crate::{
     protocols::ghost::v0::{GhostEnvelope, GhostMessage, encode},
     store::GhostStore,
 };
-use libp2p::Multiaddr;
+use libp2p::dns::{ResolverConfig, ResolverOpts};
 use prost::Message;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -625,7 +625,7 @@ impl ZRPContext {
                 libp2p::yamux::Config::default,
             )?
             .with_quic()
-            .with_dns()?
+            .with_dns_config(ResolverConfig::cloudflare(), ResolverOpts::default())
             .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)?
             .with_behaviour(|key, relay_client| make_behavior(key, relay_client))?
             .with_swarm_config(|cfg| {
