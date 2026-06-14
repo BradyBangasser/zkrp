@@ -1,20 +1,26 @@
-app = "fratrat-relay"
+app = "zkrp"
 primary_region = "ord"
+
+[build]
+dockerfile = "controller/Containerfile"
+
+[mounts]
+source = "relay_data"
+destination = "/data"
 
 [[services]]
 internal_port = 9000
 protocol = "tcp"
-
 [[services.ports]]
 port = 9000
 
 [[services]]
 internal_port = 9001
 protocol = "tcp"
-
 [[services.ports]]
 port = 9001
 
-[mounts]
-source = "relay_data"
-destination = "/data"
+[env]
+PORT = "9000"
+GRPC_PORT = "9001"
+IDENTITY_PATH = "/data/relay_identity.key"

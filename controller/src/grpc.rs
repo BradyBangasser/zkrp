@@ -84,29 +84,27 @@ impl RelayService for RelayServiceImpl {
         let (host_str, is_domain) = if let Ok(public) = std::env::var("PUBLIC_IP") {
             let is_domain = public.parse::<IpAddr>().is_err();
             (public, is_domain)
-        } else if let Some(remote) = req.remote_addr() {
-            match local_ip_for_remote(remote.ip()) {
-                Some(ip) => (ip.to_string(), false),
-                None => {
-                    tracing::warn!(
-                        "Could not determine local route to {} — falling back to loopback",
-                        remote.ip()
-                    );
-                    ("127.0.0.1".to_string(), false)
-                }
-            }
+        } else if let Some(authority) = req
+            .metadata()
+            .get("host")
+            .or_else(|| req.metadata().get(":authority"))
+        {
+            let raw = authority.to_str().unwrap_or("").to_string();
+            let host = raw.split(':').next().unwrap_or(&raw).to_string();
+            let is_domain = host.parse::<IpAddr>().is_err();
+            (host, is_domain)
         } else {
-            tracing::warn!("No remote_addr on request — falling back to loopback");
-            ("127.0.0.1".to_string(), false)
+            tracing::warn!("No host header on request — falling back to loopback");
+            ("relay.a.central.us.infra.zkrp.net".to_string(), false)
         };
 
         let prefix = if is_domain {
-            "dns4"
+            "dns"
         } else {
             match host_str.parse::<IpAddr>() {
                 Ok(IpAddr::V4(_)) => "ip4",
                 Ok(IpAddr::V6(_)) => "ip6",
-                Err(_) => "dns4",
+                Err(_) => "dns",
             }
         };
 
@@ -115,7 +113,7 @@ impl RelayService for RelayServiceImpl {
             prefix, host_str, self.state.port, self.state.peer_id
         );
 
-        tracing::debug!("list_relays → advertising {}", multiaddr);
+        tracing::debug!("advertising {}", multiaddr);
 
         Ok(Response::new(RelayListResponse {
             relays: vec![RelayInfo {

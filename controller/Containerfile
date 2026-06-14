@@ -1,11 +1,14 @@
 FROM rust:1 as build
 WORKDIR /opt/zrp
 
+RUN apt-get update -y
+RUN apt-get install protobuf-compiler -y
+
 COPY . .
 
 RUN cargo build --release -p controller
 
 FROM gcr.io/distroless/cc-debian13:latest
-COPY --from=build /opt/zrp/target/release/controller /usr/local/bin
+COPY --from=build /opt/zrp/target/release/controller /controller
 ENV IDENTITY_PATH=/data/relay_identity.key
-ENTRYPOINT [ "controller" ]
+ENTRYPOINT [ "/controller" ]
