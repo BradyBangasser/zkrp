@@ -18,6 +18,3 @@ port = 9001
 [mounts]
 source = "relay_data"
 destination = "/data"
-
-[build]
-dockerfile = "controller/Containerfile"
