@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 pub const CONTENT_TYPE_PROFILE: u16 = 0x0010;
+const PROFILE_STORE_KEY: &str = "fratrat/profile";
 
 static INIT_LOGGING: Once = Once::new();
 
@@ -94,6 +95,8 @@ impl From<BlobError> for MeshError {
     }
 }
 
+// MARK: - PeerProfile
+
 #[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
 pub struct PeerProfile {
     pub peer_id: String,
@@ -103,6 +106,44 @@ pub struct PeerProfile {
     pub bio: String,
     pub photo_blob_ids: Vec<String>,
     pub timestamp: u64,
+}
+
+#[uniffi::export]
+pub fn save_user_profile(profile: PeerProfile) -> bool {
+    let store = make_store();
+    let bytes = match postcard::to_allocvec(&profile) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("save_user_profile: serialize error: {}", e);
+            return false;
+        }
+    };
+    get_runtime().block_on(async move {
+        store.set(PROFILE_STORE_KEY, bytes);
+        tracing::info!("save_user_profile: saved profile for {}", profile.peer_id);
+        true
+    })
+}
+
+#[uniffi::export]
+pub fn load_user_profile() -> Option<PeerProfile> {
+    let store = make_store();
+    get_runtime().block_on(async move {
+        let bytes = match store.get(PROFILE_STORE_KEY) {
+            Some(b) => b,
+            None => return None,
+        };
+        match postcard::from_bytes::<PeerProfile>(&bytes) {
+            Ok(p) => {
+                tracing::info!("load_user_profile: loaded profile for {}", p.peer_id);
+                Some(p)
+            }
+            Err(e) => {
+                tracing::error!("load_user_profile: deserialize error: {}", e);
+                None
+            }
+        }
+    })
 }
 
 // MARK: - SwiftEventHandler
@@ -126,7 +167,6 @@ pub trait SwiftEventHandler: Send + Sync {
 #[derive(Clone)]
 struct SwiftHandlerBridge {
     inner: Arc<dyn SwiftEventHandler>,
-    // handle: Option<Arc<std::sync::Mutex<ZRPHandle>>>,
     profile: Arc<std::sync::Mutex<PeerProfile>>,
 }
 
@@ -146,9 +186,9 @@ impl EventHandler for SwiftHandlerBridge {
 
                         let our_profile = self.profile.lock().unwrap().clone();
                         let reply_topic = format!("fratrat/v1/profiles/dm/{}", peer_id);
-                        let payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
+                        let reply_payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
                         tokio::spawn(async move {
-                            ZRPHandle::send(tx, reply_topic, payload).await;
+                            ZRPHandle::send(tx, reply_topic, reply_payload).await;
                         });
                     }
                 }
@@ -166,8 +206,9 @@ impl EventHandler for SwiftHandlerBridge {
 
                 let our_profile = self.profile.lock().unwrap().clone();
                 let payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
+                let topic = "fratrat/v1/profiles".to_string();
                 tokio::spawn(async move {
-                    ZRPHandle::send(tx, "fratrat/v1/profiles".to_string(), payload).await;
+                    ZRPHandle::send_typed(tx, topic, payload, CONTENT_TYPE_PROFILE).await;
                 });
             }
             ZRPEvent::PeerDisconnected { peer_id, .. } => {
@@ -204,6 +245,14 @@ impl NodeIdentity {
     pub fn new() -> Self {
         Self {
             inner: CoreIdentity::generate(),
+        }
+    }
+
+    #[uniffi::constructor]
+    pub fn load_or_generate_default() -> Self {
+        let store = make_store();
+        Self {
+            inner: CoreIdentity::load_or_generate(&store),
         }
     }
 
@@ -264,12 +313,14 @@ impl MeshNode {
         profile: PeerProfile,
     ) -> Result<Self, MeshError> {
         init_logging();
+        tracing::info!("MeshNode::new relay_addr={}", relay_addr);
+
         let core_identity = CoreIdentity::from_keypair_bytes(&identity.inner.to_keypair_bytes())
             .map_err(MeshError::from)?;
 
         let core_config = CoreConfig::with_ports(config.inner.tcp_port, config.inner.quic_port);
 
-        let mut bridge = SwiftHandlerBridge {
+        let bridge = SwiftHandlerBridge {
             inner: Arc::from(handler),
             profile: Arc::new(std::sync::Mutex::new(profile)),
         };
@@ -344,11 +395,47 @@ impl MeshNode {
         }
     }
 
-    // MARK: - Blob storage
+    // MARK: - Profile
 
-    /// Upload bytes to the mesh. Returns blob_id as hex string.
-    /// Share this ID with recipients — they use it to retrieve.
-    pub async fn upload_blob(&self, data: Vec<u8>) -> Result<String, MeshError> {
+    /// Announce our profile to all peers on the profiles topic.
+    /// Sends a postcard-serialized PeerProfile at content type 0x0010
+    /// so receiving peers' SwiftHandlerBridge routes it to
+    /// on_profile_received instead of on_message.
+    pub async fn announce_profile(&self, profile: PeerProfile) -> Result<(), MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            let bytes = postcard::to_allocvec(&profile)
+                .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
+            h.publish_typed(
+                "fratrat/v1/profiles".to_string(),
+                bytes,
+                CONTENT_TYPE_PROFILE,
+            )
+            .await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
+    }
+
+    /// Reply with our profile directly to a specific peer's DM topic.
+    pub async fn reply_with_profile(
+        &self,
+        profile: PeerProfile,
+        to_peer_id: String,
+    ) -> Result<(), MeshError> {
+        if let Some(h) = self.handle.lock().await.as_ref() {
+            let bytes = postcard::to_allocvec(&profile)
+                .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
+            let topic = format!("fratrat/v1/profiles/dm/{}", to_peer_id);
+            h.publish_typed(topic, bytes, CONTENT_TYPE_PROFILE).await;
+            Ok(())
+        } else {
+            Err(MeshError::ConnectionFailed)
+        }
+    }
+
+    // MARK: - Blob / photo storage
+    pub async fn upload_photo(&self, data: Vec<u8>) -> Result<String, MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.upload_blob(data).await.map_err(MeshError::from)
         } else {
@@ -356,9 +443,7 @@ impl MeshNode {
         }
     }
 
-    /// Retrieve a blob by hex ID. Collects chunks from mesh peers.
-    /// Returns raw bytes — caller decodes (e.g. as JPEG).
-    pub async fn retrieve_blob(&self, blob_id: String) -> Result<Vec<u8>, MeshError> {
+    pub async fn retrieve_photo(&self, blob_id: String) -> Result<Vec<u8>, MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.retrieve_blob(&blob_id).await.map_err(MeshError::from)
         } else {
@@ -366,7 +451,7 @@ impl MeshNode {
         }
     }
 
-    /// Bytes currently used by blob chunk storage on this device
+    /// Bytes currently used by blob chunk storage on this device.
     pub async fn blob_storage_bytes(&self) -> u64 {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.blob_storage_bytes()
@@ -375,8 +460,6 @@ impl MeshNode {
         }
     }
 
-    /// Evict chunks for blobs older than max_age_secs.
-    /// Call on app background / low storage warnings.
     pub async fn evict_old_blobs(&self, max_age_secs: u64) {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.evict_old_blobs(max_age_secs);
@@ -398,20 +481,26 @@ impl MeshNode {
 pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
     get_runtime().block_on(async move {
         match libghost::relay::RelayClient::connect(&grpc_addr).await {
-            Ok(mut client) => client
-                .list_relays()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| RelayInfo {
-                    multiaddr: r.multiaddr,
-                    peer_id: r.peer_id,
-                    region: r.region,
-                    load: r.load,
-                    meshes: r.meshes,
-                })
-                .collect(),
-            Err(_) => vec![],
+            Ok(mut client) => {
+                tracing::info!("discover_relays: connected to {}", grpc_addr);
+                client
+                    .list_relays()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| RelayInfo {
+                        multiaddr: r.multiaddr,
+                        peer_id: r.peer_id,
+                        region: r.region,
+                        load: r.load,
+                        meshes: r.meshes,
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                tracing::error!("discover_relays: failed for '{}': {:?}", grpc_addr, e);
+                vec![]
+            }
         }
     })
 }

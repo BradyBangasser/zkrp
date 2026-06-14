@@ -3,8 +3,9 @@ WORKDIR /opt/zrp
 
 COPY . .
 
-RUN cargo build --release
+RUN cargo build --release -p controller
 
 FROM gcr.io/distroless/cc-debian13:latest
-COPY --from=build /opt/zrp/target/release/controller /
-ENTRYPOINT [ "/controller" ]
+COPY --from=build /opt/zrp/target/release/controller /usr/local/bin
+ENV IDENTITY_PATH=/data/relay_identity.key
+ENTRYPOINT [ "controller" ]

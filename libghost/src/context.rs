@@ -27,7 +27,7 @@ fn backoff_delay(attempt: u32) -> Option<Duration> {
 
 struct PendingMessage {
     id: String,
-    topic_hash: String,
+    topic: String,
     payload: Vec<u8>,
     attempts: u32,
     next_retry: tokio::time::Instant,
@@ -36,7 +36,7 @@ struct PendingMessage {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OutboxEntry {
     id: String,
-    topic_hash: String,
+    topic: String,
     payload: Vec<u8>,
     attempts: u32,
 }
@@ -45,7 +45,7 @@ impl From<&PendingMessage> for OutboxEntry {
     fn from(m: &PendingMessage) -> Self {
         Self {
             id: m.id.clone(),
-            topic_hash: m.topic_hash.clone(),
+            topic: m.topic.clone(),
             payload: m.payload.clone(),
             attempts: m.attempts,
         }
@@ -77,7 +77,7 @@ async fn swarm_task<B>(
         .filter_map(|bytes| postcard::from_bytes::<OutboxEntry>(&bytes).ok())
         .map(|e| PendingMessage {
             id: e.id,
-            topic_hash: e.topic_hash,
+            topic: e.topic,
             payload: e.payload,
             attempts: e.attempts,
             next_retry: tokio::time::Instant::now(),
@@ -113,7 +113,7 @@ async fn swarm_task<B>(
                         continue;
                     }
 
-                    let topic = libp2p::gossipsub::IdentTopic::new(&msg.topic_hash);
+                    let topic = libp2p::gossipsub::IdentTopic::new(&msg.topic);
                     match swarm.behaviour_mut().publish(topic, msg.payload.clone()) {
                         Ok(_) => {
                             store.delete(&format!("ghost/outbox/{}", msg.id));
@@ -136,7 +136,7 @@ async fn swarm_task<B>(
                                 store.delete(&format!("ghost/outbox/{}", msg.id));
                                 tracing::warn!("publish giving up after {} attempts", msg.attempts);
                                 let _ = raw_tx.send(RawEvent::PublishFailed {
-                                    topic_hash: msg.topic_hash.clone(),
+                                    topic: msg.topic.clone(),
                                 }).await;
                             }
                         }
@@ -144,7 +144,7 @@ async fn swarm_task<B>(
                             store.delete(&format!("ghost/outbox/{}", msg.id));
                             tracing::warn!("publish failed (non-retryable): {e}");
                             let _ = raw_tx.send(RawEvent::PublishFailed {
-                                topic_hash: msg.topic_hash.clone(),
+                                topic: msg.topic.clone(),
                             }).await;
                         }
                     }
@@ -217,10 +217,10 @@ async fn swarm_task<B>(
 
         Some(cmd) = cmd_rx.recv() => {
             match cmd {
-                    SwarmCommand::Publish { topic_hash, payload } => {
+                    SwarmCommand::Publish { topic, payload, content_type} => {
                         let msg = PendingMessage {
                             id: Ulid::new().to_string(),
-                            topic_hash,
+                            topic,
                             payload,
                             attempts: 0,
                             next_retry: tokio::time::Instant::now(),
@@ -231,8 +231,8 @@ async fn swarm_task<B>(
                         );
                         outbox.push(msg);
                     }
-                    SwarmCommand::Subscribe { topic_hash } => {
-                        let topic = libp2p::gossipsub::IdentTopic::new(&topic_hash);
+                    SwarmCommand::Subscribe { topic } => {
+                        let topic = libp2p::gossipsub::IdentTopic::new(&topic);
                         if let Err(e) = swarm.behaviour_mut().subscribe_topic(topic) {
                             tracing::warn!("subscribe failed: {e}");
                         }
@@ -390,9 +390,9 @@ async fn crypto_task(
                         }
                     }
 
-                    RawEvent::PublishFailed { topic_hash } => {
+                    RawEvent::PublishFailed { topic } => {
                         let e = Arc::new(ZRPEvent::MessageSendFailed {
-                            conversation: topic_hash,
+                            conversation: topic,
                             reason: SendFailReason::NoPeersSubscribed,
                         });
                         for handler in handlers.lock().await.values() {
@@ -407,20 +407,21 @@ async fn crypto_task(
 
             Some(cmd) = crypto_rx.recv() => {
                 match cmd {
-                    SwarmCommand::Publish { topic_hash, payload } => {
+                    SwarmCommand::Publish { topic, payload , content_type} => {
                         if let Ok(message) = GhostMessage::new(&kb, CONTENT_TYPE_TEXT, &payload) {
                             let payload = postcard::to_allocvec(&message).unwrap();
                             let envelope = encode(&payload);
                             let mut encoded = Vec::new();
                             envelope.encode(&mut encoded).unwrap();
                             let _ = swarm_tx.send(SwarmCommand::Publish {
-                                topic_hash,
+                                topic,
                                 payload: encoded,
+                                content_type
                             }).await;
                         }
                     }
-                    SwarmCommand::Subscribe { topic_hash } => {
-                        let _ = swarm_tx.send(SwarmCommand::Subscribe { topic_hash }).await;
+                    SwarmCommand::Subscribe { topic } => {
+                        let _ = swarm_tx.send(SwarmCommand::Subscribe { topic }).await;
                     }
                     SwarmCommand::Shutdown => {
                         let _ = swarm_tx.send(SwarmCommand::Shutdown).await;
@@ -435,15 +436,16 @@ async fn crypto_task(
 
 pub enum SwarmCommand {
     Publish {
-        topic_hash: String,
+        topic: String,
         payload: Vec<u8>,
+        content_type: u16,
     },
     Subscribe {
-        topic_hash: String,
+        topic: String,
     },
     #[allow(unused)]
     Unsubscribe {
-        topic_hash: String,
+        topic: String,
     },
     Shutdown,
 }
@@ -466,7 +468,7 @@ pub(crate) enum RawEvent {
     },
     RelayLost,
     PublishFailed {
-        topic_hash: String,
+        topic: String,
     },
 }
 
@@ -477,32 +479,50 @@ pub struct ZRPHandle {
 }
 
 impl ZRPHandle {
-    pub async fn send(cmd_tx: mpsc::Sender<SwarmCommand>, topic_hash: String, payload: Vec<u8>) {
-        cmd_tx
+    pub async fn publish(&self, topic: String, payload: Vec<u8>) {
+        self.publish_typed(topic, payload, 0).await;
+    }
+
+    pub async fn publish_typed(&self, topic: String, payload: Vec<u8>, content_type: u16) {
+        let _ = self
+            .cmd_tx
             .send(SwarmCommand::Publish {
-                topic_hash,
+                topic,
                 payload,
+                content_type,
             })
-            .await
-            .unwrap();
-    }
-
-    pub async fn publish(&self, topic_hash: String, payload: Vec<u8>) {
-        Self::send(self.cmd_tx.clone(), topic_hash, payload).await;
-    }
-
-    pub async fn subscribe(&self, topic_hash: String) {
-        let _ = self
-            .cmd_tx
-            .send(SwarmCommand::Subscribe { topic_hash })
             .await;
     }
 
-    pub async fn unsubscribe(&self, topic_hash: String) {
-        let _ = self
-            .cmd_tx
-            .send(SwarmCommand::Unsubscribe { topic_hash })
+    pub async fn send(
+        tx: tokio::sync::mpsc::Sender<SwarmCommand>,
+        topic: String,
+        payload: Vec<u8>,
+    ) {
+        Self::send_typed(tx, topic, payload, 0).await;
+    }
+
+    pub async fn send_typed(
+        tx: tokio::sync::mpsc::Sender<SwarmCommand>,
+        topic: String,
+        payload: Vec<u8>,
+        content_type: u16,
+    ) {
+        let _ = tx
+            .send(SwarmCommand::Publish {
+                topic,
+                payload,
+                content_type,
+            })
             .await;
+    }
+
+    pub async fn subscribe(&self, topic: String) {
+        let _ = self.cmd_tx.send(SwarmCommand::Subscribe { topic }).await;
+    }
+
+    pub async fn unsubscribe(&self, topic: String) {
+        let _ = self.cmd_tx.send(SwarmCommand::Unsubscribe { topic }).await;
     }
 
     pub async fn shutdown(&self) {
