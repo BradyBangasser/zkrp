@@ -397,10 +397,6 @@ impl MeshNode {
 
     // MARK: - Profile
 
-    /// Announce our profile to all peers on the profiles topic.
-    /// Sends a postcard-serialized PeerProfile at content type 0x0010
-    /// so receiving peers' SwiftHandlerBridge routes it to
-    /// on_profile_received instead of on_message.
     pub async fn announce_profile(&self, profile: PeerProfile) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let bytes = postcard::to_allocvec(&profile)
