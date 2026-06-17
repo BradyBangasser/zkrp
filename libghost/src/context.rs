@@ -185,7 +185,14 @@ async fn swarm_task<B>(
                     }).await;
                 }
 
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                    let addr = match &endpoint {
+                        libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
+                        libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
+                    };
+
+                    let _ = raw_tx.send(RawEvent::PeerDiscovered { peer_id, addr }).await;
+
                     if !circuit_reserved.contains(&peer_id) {
                         let circuit_addr = relay_addrs.iter().find_map(|r| {
                             let ma = r.parse::<libp2p::Multiaddr>().ok()?;
