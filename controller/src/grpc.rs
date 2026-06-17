@@ -6,6 +6,16 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::IntervalStream;
 use tonic::{Request, Response, Status, transport::Server};
 
+#[cfg(not(debug_assertions))]
+fn get_fallback_address(_: &Request<()>) -> String {
+    "relay.a.central.us.infra.zkrp.net".into()
+}
+
+#[cfg(debug_assertions)]
+fn get_fallback_address(req: &Request<()>) -> String {
+    req.local_addr().unwrap().ip().to_string()
+}
+
 pub mod proto {
     tonic::include_proto!("zrp.relay.v1");
 }
@@ -20,16 +30,6 @@ type WatchStatsStream = Pin<Box<dyn futures::Stream<Item = Result<StatsResponse,
 
 pub struct RelayServiceImpl {
     state: RelayState,
-}
-
-fn local_ip_for_remote(remote: IpAddr) -> Option<IpAddr> {
-    let bind_addr = match remote {
-        IpAddr::V4(_) => "0.0.0.0:0",
-        IpAddr::V6(_) => "[::]:0",
-    };
-    let socket = UdpSocket::bind(bind_addr).ok()?;
-    socket.connect((remote, 9000)).ok()?;
-    Some(socket.local_addr().ok()?.ip())
 }
 
 #[tonic::async_trait]
@@ -94,8 +94,8 @@ impl RelayService for RelayServiceImpl {
             let is_domain = host.parse::<IpAddr>().is_err();
             (host, is_domain)
         } else {
-            tracing::warn!("No host header on request — falling back to loopback");
-            ("relay.a.central.us.infra.zkrp.net".to_string(), false)
+            tracing::warn!("No host header on request, falling back to loopback");
+            (get_fallback_address(&req), false)
         };
 
         let prefix = if is_domain {

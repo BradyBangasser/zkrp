@@ -118,32 +118,25 @@ pub fn save_user_profile(profile: PeerProfile) -> bool {
             return false;
         }
     };
-    get_runtime().block_on(async move {
-        store.set(PROFILE_STORE_KEY, bytes);
-        tracing::info!("save_user_profile: saved profile for {}", profile.peer_id);
-        true
-    })
+    store.set(PROFILE_STORE_KEY, bytes);
+    tracing::info!("save_user_profile: saved for {}", profile.peer_id);
+    true
 }
 
 #[uniffi::export]
 pub fn load_user_profile() -> Option<PeerProfile> {
     let store = make_store();
-    get_runtime().block_on(async move {
-        let bytes = match store.get(PROFILE_STORE_KEY) {
-            Some(b) => b,
-            None => return None,
-        };
-        match postcard::from_bytes::<PeerProfile>(&bytes) {
-            Ok(p) => {
-                tracing::info!("load_user_profile: loaded profile for {}", p.peer_id);
-                Some(p)
-            }
-            Err(e) => {
-                tracing::error!("load_user_profile: deserialize error: {}", e);
-                None
-            }
+    let bytes = store.get(PROFILE_STORE_KEY)?;
+    match postcard::from_bytes::<PeerProfile>(&bytes) {
+        Ok(p) => {
+            tracing::info!("load_user_profile: loaded for {}", p.peer_id);
+            Some(p)
         }
-    })
+        Err(e) => {
+            tracing::error!("load_user_profile: deserialize error: {}", e);
+            None
+        }
+    }
 }
 
 // MARK: - SwiftEventHandler
@@ -188,7 +181,13 @@ impl EventHandler for SwiftHandlerBridge {
                         let reply_topic = format!("fratrat/v1/profiles/dm/{}", peer_id);
                         let reply_payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
                         tokio::spawn(async move {
-                            ZRPHandle::send(tx, reply_topic, reply_payload).await;
+                            ZRPHandle::send_typed(
+                                tx,
+                                reply_topic,
+                                reply_payload,
+                                CONTENT_TYPE_PROFILE,
+                            )
+                            .await;
                         });
                     }
                 }
