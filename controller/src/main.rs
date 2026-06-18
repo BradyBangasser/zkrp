@@ -20,9 +20,7 @@ pub struct RelayState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let identity = NodeIdentity::generate();
     let port = std::env::var("PORT")

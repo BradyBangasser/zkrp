@@ -420,7 +420,7 @@ async fn crypto_task(
                             content_type
                         );
 
-                        if let Ok(message) = GhostMessage::new(&kb, CONTENT_TYPE_TEXT, &payload) {
+                        if let Ok(message) = GhostMessage::new(&kb, content_type, &payload) {
                             let payload = postcard::to_allocvec(&message).unwrap();
                             let envelope = encode(&payload);
                             let mut encoded = Vec::new();
@@ -628,7 +628,8 @@ impl ZRPContext {
         }
 
         if relays.is_empty() {
-            match ZRPHandle::discover_relays("http://127.0.0.1:9001").await {
+            match ZRPHandle::discover_relays("http://relay.a.central.us.infra.zkrp.net:9001").await
+            {
                 Ok(mut relay) => relays.append(&mut relay),
                 Err(e) => tracing::info!("Failed to discover relays: {}", e),
             }
