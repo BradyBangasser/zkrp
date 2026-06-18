@@ -1,7 +1,7 @@
 use crate::blob::{BlobManager, BlobManifest, ChunkRequest, ChunkResponse, ChunkStoreRequest};
 use crate::relay::RelayClient;
 use crate::{
-    codec::{self, CONTENT_TYPE_TEXT, Codec},
+    codec::{self, Codec},
     handler::{ConnectionStatus, DisconnectReason, EventHandler, SendFailReason, ZRPEvent},
     keybundle::KeyBundle,
     protocols::ghost::v0::{GhostEnvelope, GhostMessage, encode},
@@ -31,6 +31,7 @@ struct PendingMessage {
     payload: Vec<u8>,
     attempts: u32,
     next_retry: tokio::time::Instant,
+    content_type: u16,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -39,6 +40,7 @@ struct OutboxEntry {
     topic: String,
     payload: Vec<u8>,
     attempts: u32,
+    content_type: u16,
 }
 
 impl From<&PendingMessage> for OutboxEntry {
@@ -48,6 +50,7 @@ impl From<&PendingMessage> for OutboxEntry {
             topic: m.topic.clone(),
             payload: m.payload.clone(),
             attempts: m.attempts,
+            content_type: m.content_type,
         }
     }
 }
@@ -81,6 +84,7 @@ async fn swarm_task<B>(
             payload: e.payload,
             attempts: e.attempts,
             next_retry: tokio::time::Instant::now(),
+            content_type: e.content_type,
         })
         .collect();
 
@@ -230,6 +234,7 @@ async fn swarm_task<B>(
                             payload,
                             attempts: 0,
                             next_retry: tokio::time::Instant::now(),
+                            content_type
                         };
                         store.set(
                             &format!("ghost/outbox/{}", msg.id),
