@@ -90,13 +90,17 @@ impl MeshBehaviour for ClientBehavior {
         }
     }
 
-    fn extract_gossip(event: &ClientBehaviorEvent) -> Option<(Vec<u8>, PeerId)> {
+    fn extract_gossip(event: &ClientBehaviorEvent) -> Option<(String, Vec<u8>, PeerId)> {
         match event {
             ClientBehaviorEvent::Gossipsub(gossipsub::Event::Message {
                 message,
                 propagation_source,
                 ..
-            }) => Some((message.data.clone(), *propagation_source)),
+            }) => Some((
+                message.topic.clone().into_string(),
+                message.data.clone(),
+                *propagation_source,
+            )),
             _ => None,
         }
     }

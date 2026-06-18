@@ -172,8 +172,7 @@ async fn swarm_task<B>(
                         }
                     }
 
-                    if let Some((bytes, propagation_src)) = B::extract_gossip(&b_event) {
-                        let topic = String::new();
+                    if let Some((topic, bytes, propagation_src)) = B::extract_gossip(&b_event) {
                         let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src }).await;
                     }
                 }
@@ -415,6 +414,12 @@ async fn crypto_task(
             Some(cmd) = crypto_rx.recv() => {
                 match cmd {
                     SwarmCommand::Publish { topic, payload , content_type} => {
+                        tracing::info!(
+                            "crypto_task: publishing topic={} content_type=0x{:04x}",
+                            topic,
+                            content_type
+                        );
+
                         if let Ok(message) = GhostMessage::new(&kb, CONTENT_TYPE_TEXT, &payload) {
                             let payload = postcard::to_allocvec(&message).unwrap();
                             let envelope = encode(&payload);
