@@ -18,7 +18,7 @@ static INIT_LOGGING: Once = Once::new();
 fn init_logging() {
     INIT_LOGGING.call_once(|| {
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .init();
     });
 }
