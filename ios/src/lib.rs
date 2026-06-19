@@ -181,14 +181,13 @@ impl EventHandler for SwiftHandlerBridge {
                         let reply_topic = format!("fratrat/v1/profiles/dm/{}", peer_id);
                         let reply_payload = postcard::to_allocvec(&our_profile).unwrap_or_default();
                         tokio::spawn(async move {
-                            ZRPHandle::send_typed(
-                                tx,
-                                reply_topic,
-                                reply_payload,
-                                CONTENT_TYPE_PROFILE,
-                            )
-                            .await;
+                            ZRPHandle::send_typed(tx, reply_topic, reply_payload, 0x0011).await;
                         });
+                    }
+                }
+                0x0011 => {
+                    if let Ok(profile) = postcard::from_bytes::<PeerProfile>(payload) {
+                        self.inner.on_profile_received(profile.clone());
                     }
                 }
                 _ => {
