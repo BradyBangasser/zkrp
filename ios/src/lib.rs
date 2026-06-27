@@ -1161,42 +1161,30 @@ impl EventHandler for SwiftHandlerBridge {
                         .await;
                     }
 
-                    // 6. Re-send any pending like or invite that the peer
-                    //    missed while offline — keyed by their peer_id.
-                    let rel_key = relationship_key(&peer_id_str);
-                    if let Some(rel_bytes) = store.get(&rel_key) {
-                        if let Ok(state) = postcard::from_bytes::<RelationshipState>(&rel_bytes) {
-                            match state {
-                                RelationshipState::InviteSent { .. } => {
-                                    // Re-send the stored invite payload
-                                    let invite_key =
-                                        format!("fratrat/pending_invite/{}", peer_id_str);
-                                    if let Some(inv_bytes) = store.get(&invite_key) {
-                                        ZRPHandle::send_typed(
-                                            tx_clone.clone(),
-                                            format!("fratrat/v1/dm/{}", peer_id_str),
-                                            inv_bytes,
-                                            CONTENT_TYPE_INVITE,
-                                        )
-                                        .await;
-                                    }
-                                }
-                                RelationshipState::Liked => {
-                                    // Re-send the stored like payload
-                                    let like_key = format!("fratrat/pending_like/{}", peer_id_str);
-                                    if let Some(like_bytes) = store.get(&like_key) {
-                                        ZRPHandle::send_typed(
-                                            tx_clone.clone(),
-                                            format!("fratrat/v1/dm/{}", peer_id_str),
-                                            like_bytes,
-                                            CONTENT_TYPE_LIKE,
-                                        )
-                                        .await;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                    // 6. Re-send any pending like or invite to this peer
+                    //    that they missed while offline.
+                    let pending_like_key = format!("fratrat/pending_like/{}", peer_id_str);
+                    if let Some(like_bytes) = store.get(&pending_like_key) {
+                        tracing::info!("re-sending pending like to {}", peer_id_str);
+                        ZRPHandle::send_typed(
+                            tx_clone.clone(),
+                            format!("fratrat/v1/dm/{}", peer_id_str),
+                            like_bytes,
+                            CONTENT_TYPE_LIKE,
+                        )
+                        .await;
+                    }
+
+                    let pending_invite_key = format!("fratrat/pending_invite/{}", peer_id_str);
+                    if let Some(inv_bytes) = store.get(&pending_invite_key) {
+                        tracing::info!("re-sending pending invite to {}", peer_id_str);
+                        ZRPHandle::send_typed(
+                            tx_clone,
+                            format!("fratrat/v1/dm/{}", peer_id_str),
+                            inv_bytes,
+                            CONTENT_TYPE_INVITE,
+                        )
+                        .await;
                     }
                 });
                 // Record last-seen so future backfills know the window
@@ -1262,11 +1250,8 @@ impl NodeIdentity {
         self.inner.peer_id_string()
     }
 
-    /// Generate 32 random bytes for use as a conversation key.
-
     /// Encrypt plaintext so only the holder of peer_id's private key
     /// can decrypt it. Returns [ephemeral_pubkey(32) || nonce(12) || ciphertext].
-    /// Call this before building a LikePayload or InvitePayload.
     pub fn encrypt_for_peer(
         &self,
         plaintext: Vec<u8>,
@@ -1283,6 +1268,14 @@ impl NodeIdentity {
             .decrypt(&ciphertext)
             .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
     }
+}
+
+/// Generate 32 random bytes suitable for use as a conversation key.
+/// Free function so Swift can call it as generateConversationKey()
+/// without needing a NodeIdentity instance.
+#[uniffi::export]
+pub fn generate_conversation_key() -> Vec<u8> {
+    CoreIdentity::generate_conversation_key()
 }
 
 impl Default for NodeIdentity {
@@ -1493,34 +1486,41 @@ impl MeshNode {
 
     // MARK: - Like flow
 
-    /// Send a like to a peer. Persists the payload so it can be
-    /// re-sent via backfill if the peer was offline when we sent it.
-    /// Caller must have already encrypted conversation_key to the
-    /// recipient's pubkey via CoreIdentity.encrypt_for_peer().
-    pub async fn send_like(&self, payload: LikePayload) -> Result<(), MeshError> {
+    pub async fn send_like(
+        &self,
+        to_peer_id: String,
+        payload: LikePayload,
+    ) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let bytes = postcard::to_allocvec(&payload)
                 .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
-            // Persist as pending so we can backfill on reconnect
+            // Persist as pending keyed by recipient so backfill can find it
             store().set(
-                &format!("fratrat/pending_like/{}", payload.sender_peer_id),
+                &format!("fratrat/pending_like/{}", to_peer_id),
                 bytes.clone(),
             );
-            // Update relationship state to Liked
+            // Track relationship state keyed by recipient
             let state = RelationshipState::Liked;
             if let Ok(sb) = postcard::to_allocvec(&state) {
-                store().set(&relationship_key(&payload.sender_peer_id), sb);
+                store().set(&relationship_key(&to_peer_id), sb);
             }
-            let topic = format!("fratrat/v1/dm/{}", payload.sender_peer_id);
-            h.publish_typed(topic, bytes, CONTENT_TYPE_LIKE).await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                bytes,
+                CONTENT_TYPE_LIKE,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
         }
     }
 
-    /// Send a like back (mutual match confirmation).
-    pub async fn send_like_back(&self, payload: LikeBackPayload) -> Result<(), MeshError> {
+    pub async fn send_like_back(
+        &self,
+        to_peer_id: String,
+        payload: LikeBackPayload,
+    ) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let bytes = postcard::to_allocvec(&payload)
                 .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
@@ -1528,62 +1528,73 @@ impl MeshNode {
                 conversation_id: payload.conversation_id.clone(),
             };
             if let Ok(sb) = postcard::to_allocvec(&state) {
-                store().set(&relationship_key(&payload.sender_peer_id), sb);
+                store().set(&relationship_key(&to_peer_id), sb);
             }
-            let topic = format!("fratrat/v1/dm/{}", payload.sender_peer_id);
-            h.publish_typed(topic, bytes, CONTENT_TYPE_LIKE_BACK).await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                bytes,
+                CONTENT_TYPE_LIKE_BACK,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
         }
     }
 
-    /// Decline an incoming like.
     pub async fn send_like_declined(&self, to_peer_id: String) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let state = RelationshipState::Declined;
             if let Ok(sb) = postcard::to_allocvec(&state) {
                 store().set(&relationship_key(&to_peer_id), sb);
             }
-            let topic = format!("fratrat/v1/dm/{}", to_peer_id);
-            h.publish_typed(topic, vec![], CONTENT_TYPE_LIKE_DECLINED)
-                .await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                vec![],
+                CONTENT_TYPE_LIKE_DECLINED,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
         }
     }
 
-    // MARK: - Direct invite flow
-
-    /// Send a direct invite to a named peer. Persists for offline delivery.
-    /// Caller must have already encrypted conversation_key to the
-    /// recipient's pubkey via CoreIdentity.encrypt_for_peer().
-    pub async fn send_invite(&self, payload: InvitePayload) -> Result<(), MeshError> {
+    pub async fn send_invite(
+        &self,
+        to_peer_id: String,
+        payload: InvitePayload,
+    ) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let bytes = postcard::to_allocvec(&payload)
                 .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
-            // Persist for backfill on reconnect
             store().set(
-                &format!("fratrat/pending_invite/{}", payload.sender_peer_id),
+                &format!("fratrat/pending_invite/{}", to_peer_id),
                 bytes.clone(),
             );
             let state = RelationshipState::InviteSent {
                 conversation_id: payload.conversation_id.clone(),
             };
             if let Ok(sb) = postcard::to_allocvec(&state) {
-                store().set(&relationship_key(&payload.sender_peer_id), sb);
+                store().set(&relationship_key(&to_peer_id), sb);
             }
-            let topic = format!("fratrat/v1/dm/{}", payload.sender_peer_id);
-            h.publish_typed(topic, bytes, CONTENT_TYPE_INVITE).await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                bytes,
+                CONTENT_TYPE_INVITE,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
         }
     }
 
-    /// Accept an incoming direct invite.
-    pub async fn send_invite_accept(&self, payload: InviteAcceptPayload) -> Result<(), MeshError> {
+    pub async fn send_invite_accept(
+        &self,
+        to_peer_id: String,
+        payload: InviteAcceptPayload,
+    ) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let bytes = postcard::to_allocvec(&payload)
                 .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
@@ -1591,29 +1602,33 @@ impl MeshNode {
                 conversation_id: payload.conversation_id.clone(),
             };
             if let Ok(sb) = postcard::to_allocvec(&state) {
-                store().set(&relationship_key(&payload.acceptor_peer_id), sb);
+                store().set(&relationship_key(&to_peer_id), sb);
             }
-            let topic = format!("fratrat/v1/dm/{}", payload.acceptor_peer_id);
-            h.publish_typed(topic, bytes, CONTENT_TYPE_INVITE_ACCEPT)
-                .await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                bytes,
+                CONTENT_TYPE_INVITE_ACCEPT,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
         }
     }
 
-    /// Decline an incoming direct invite.
     pub async fn send_invite_decline(&self, to_peer_id: String) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             let state = RelationshipState::Declined;
             if let Ok(sb) = postcard::to_allocvec(&state) {
                 store().set(&relationship_key(&to_peer_id), sb);
             }
-            // Remove any pending invite from them
             store().delete(&format!("fratrat/pending_invite/{}", to_peer_id));
-            let topic = format!("fratrat/v1/dm/{}", to_peer_id);
-            h.publish_typed(topic, vec![], CONTENT_TYPE_INVITE_DECLINE)
-                .await;
+            h.publish_typed(
+                format!("fratrat/v1/dm/{}", to_peer_id),
+                vec![],
+                CONTENT_TYPE_INVITE_DECLINE,
+            )
+            .await;
             Ok(())
         } else {
             Err(MeshError::ConnectionFailed)
@@ -1689,11 +1704,6 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
             }
         }
     })
-}
-
-#[uniffi::export]
-pub fn generate_conversation_key() -> Vec<u8> {
-    CoreIdentity::generate_conversation_key()
 }
 
 // MARK: - Records
