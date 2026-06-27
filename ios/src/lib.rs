@@ -1263,9 +1263,6 @@ impl NodeIdentity {
     }
 
     /// Generate 32 random bytes for use as a conversation key.
-    pub fn generate_conversation_key(&self) -> Vec<u8> {
-        CoreIdentity::generate_conversation_key()
-    }
 
     /// Encrypt plaintext so only the holder of peer_id's private key
     /// can decrypt it. Returns [ephemeral_pubkey(32) || nonce(12) || ciphertext].
@@ -1692,6 +1689,11 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
             }
         }
     })
+}
+
+#[uniffi::export]
+pub fn generate_conversation_key() -> Vec<u8> {
+    CoreIdentity::generate_conversation_key()
 }
 
 // MARK: - Records
