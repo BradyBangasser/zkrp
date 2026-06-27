@@ -1,5 +1,5 @@
 use crate::RelayState;
-use std::net::{IpAddr, UdpSocket};
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use tokio_stream::StreamExt;

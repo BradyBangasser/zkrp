@@ -197,11 +197,11 @@ fn save_if_newer<T: serde::Serialize + serde::de::DeserializeOwned>(
         .and_then(|b| postcard::from_bytes::<T>(&b).ok())
         .map(|existing| existing_ts_fn(&existing))
         .unwrap_or(0);
-    if item_ts > existing_ts {
-        if let Ok(bytes) = postcard::to_allocvec(item) {
-            store.set(key, bytes);
-            return true;
-        }
+    if item_ts > existing_ts
+        && let Ok(bytes) = postcard::to_allocvec(item)
+    {
+        store.set(key, bytes);
+        return true;
     }
     false
 }
@@ -239,8 +239,6 @@ pub fn load_user_profile() -> Option<PeerProfile> {
         }
     }
 }
-
-// MARK: - Peer profile cache (other peers we've seen)
 
 /// Persist a peer's profile to SQLite. Called automatically by
 /// SwiftHandlerBridge when a profile is received, so Swift doesn't
@@ -822,10 +820,10 @@ impl EventHandler for SwiftHandlerBridge {
                                 .and_then(|b| postcard::from_bytes::<PeerProfile>(&b).ok())
                                 .map(|p| p.timestamp)
                                 .unwrap_or(0);
-                            if profile.timestamp > existing_ts {
-                                if let Ok(bytes) = postcard::to_allocvec(profile) {
-                                    self.store.set(&peer_profile_key(&profile.peer_id), bytes);
-                                }
+                            if profile.timestamp > existing_ts
+                                && let Ok(bytes) = postcard::to_allocvec(profile)
+                            {
+                                self.store.set(&peer_profile_key(&profile.peer_id), bytes);
                             }
                         }
                         self.inner.on_profiles_backfilled(profiles);
@@ -926,10 +924,10 @@ impl EventHandler for SwiftHandlerBridge {
                 CONTENT_TYPE_MESSAGE => {
                     if let Ok(msg) = postcard::from_bytes::<StoredMessage>(payload) {
                         let key = message_key(&msg.conversation_id, &msg.message_id);
-                        if self.store.get(&key).is_none() {
-                            if let Ok(bytes) = postcard::to_allocvec(&msg) {
-                                self.store.set(&key, bytes);
-                            }
+                        if self.store.get(&key).is_none()
+                            && let Ok(bytes) = postcard::to_allocvec(&msg)
+                        {
+                            self.store.set(&key, bytes);
                         }
                         self.inner.on_message_received(msg);
                     }
@@ -967,6 +965,20 @@ impl EventHandler for SwiftHandlerBridge {
                 // relationship record until the user acts on it.
                 CONTENT_TYPE_LIKE => {
                     if let Ok(like) = postcard::from_bytes::<LikePayload>(payload) {
+                        let existing = self
+                            .store
+                            .get(&relationship_key(&like.sender_peer_id))
+                            .and_then(|b| postcard::from_bytes::<RelationshipState>(&b).ok())
+                            .unwrap_or(RelationshipState::None);
+
+                        if matches!(
+                            existing,
+                            RelationshipState::Matched { .. }
+                                | RelationshipState::InviteAccepted { .. }
+                        ) {
+                            return true;
+                        }
+
                         let state = RelationshipState::LikedBy {
                             conversation_key_enc: like.conversation_key_enc.clone(),
                         };
@@ -978,10 +990,12 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
-                // ── Like back (mutual match) ──────────────────────────────
-                // Update our state to Matched — the conversation is open.
                 CONTENT_TYPE_LIKE_BACK => {
                     if let Ok(payload_inner) = postcard::from_bytes::<LikeBackPayload>(payload) {
+                        self.store.delete(&format!(
+                            "fratrat/pending_like/{}",
+                            payload_inner.sender_peer_id
+                        ));
                         let state = RelationshipState::Matched {
                             conversation_id: payload_inner.conversation_id.clone(),
                         };
@@ -993,7 +1007,6 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
-                // ── Like declined ─────────────────────────────────────────
                 CONTENT_TYPE_LIKE_DECLINED => {
                     let peer_id_str = peer_id.to_string();
                     let state = RelationshipState::Declined;
@@ -1219,7 +1232,6 @@ impl EventHandler for SwiftHandlerBridge {
                 let ts = now_unix().to_le_bytes().to_vec();
                 self.store
                     .set(&peer_last_seen_key(&peer_id.to_string()), ts);
-                self.inner.on_peer_disconnected(peer_id.to_string());
             }
 
             ZRPEvent::ConnectionStatus(status) => {
@@ -1230,6 +1242,13 @@ impl EventHandler for SwiftHandlerBridge {
                     ConnectionStatus::Degraded { reason, .. } => format!("degraded:{}", reason),
                 };
                 self.inner.on_connection_status(s);
+            }
+
+            ZRPEvent::PeerDisconnected { peer_id, .. } => {
+                let ts = now_unix().to_le_bytes().to_vec();
+                self.store
+                    .set(&peer_last_seen_key(&peer_id.to_string()), ts);
+                self.inner.on_peer_disconnected(peer_id.to_string());
             }
 
             ZRPEvent::MessageSendFailed { conversation, .. } => {
