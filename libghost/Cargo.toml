@@ -35,11 +35,15 @@ tonic-prost = "0.14"
 rusqlite = { version = "0.39", features = ["bundled"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+curve25519-dalek = { version = "5.0.0-rc.1", features = ["rand_core"] }
 sha3 = "0.12"
 ulid = "1.2"
 aes-gcm = "0.10.3"
 thiserror = "2.0.18"
 hex = "0.4.3"
+hmac = "0.13.0"
+chacha20poly1305 = "0.10"
+sha2 = "0.11"
 
 [build-dependencies]
 prost-build = "0.14"

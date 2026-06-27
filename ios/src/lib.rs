@@ -76,6 +76,8 @@ fn now_unix() -> u64 {
 
 uniffi::setup_scaffolding!();
 
+// MARK: - Error
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MeshError {
     #[error("Invalid address")]
@@ -119,6 +121,8 @@ impl From<BlobError> for MeshError {
     }
 }
 
+// MARK: - PeerProfile
+
 #[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
 pub struct PeerProfile {
     pub peer_id: String,
@@ -129,6 +133,8 @@ pub struct PeerProfile {
     pub photo_blob_ids: Vec<String>,
     pub timestamp: u64,
 }
+
+// MARK: - PartyProfile
 
 #[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
 pub struct PartyProfile {
@@ -147,6 +153,8 @@ pub struct PartyProfile {
     pub timestamp: u64,
 }
 
+// MARK: - AlertProfile
+
 #[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
 pub struct AlertProfile {
     pub name: String,
@@ -157,6 +165,8 @@ pub struct AlertProfile {
     pub lon: f64,
     pub timestamp: u64,
 }
+
+// MARK: - Store key helpers
 
 fn peer_profile_key(peer_id: &str) -> String {
     format!("{}{}", PEER_PROFILE_PREFIX, peer_id)
@@ -187,14 +197,16 @@ fn save_if_newer<T: serde::Serialize + serde::de::DeserializeOwned>(
         .and_then(|b| postcard::from_bytes::<T>(&b).ok())
         .map(|existing| existing_ts_fn(&existing))
         .unwrap_or(0);
-    if item_ts > existing_ts
-        && let Ok(bytes) = postcard::to_allocvec(item)
-    {
-        store.set(key, bytes);
-        return true;
+    if item_ts > existing_ts {
+        if let Ok(bytes) = postcard::to_allocvec(item) {
+            store.set(key, bytes);
+            return true;
+        }
     }
     false
 }
+
+// MARK: - Own profile persistence
 
 #[uniffi::export]
 pub fn save_user_profile(profile: PeerProfile) -> bool {
@@ -227,6 +239,8 @@ pub fn load_user_profile() -> Option<PeerProfile> {
         }
     }
 }
+
+// MARK: - Peer profile cache (other peers we've seen)
 
 /// Persist a peer's profile to SQLite. Called automatically by
 /// SwiftHandlerBridge when a profile is received, so Swift doesn't
@@ -282,6 +296,8 @@ pub fn load_peer_profiles_since(since_unix_secs: u64) -> Vec<PeerProfile> {
         .collect()
 }
 
+// MARK: - Peer last-seen tracking
+
 /// Record the current time as the last-seen timestamp for a peer.
 /// Called on PeerDisconnected so we know exactly when they left.
 #[uniffi::export]
@@ -302,6 +318,8 @@ pub fn get_peer_last_seen(peer_id: String) -> u64 {
         .map(u64::from_le_bytes)
         .unwrap_or(0)
 }
+
+// MARK: - Party persistence
 
 /// Save a party to the local cache (keyed by party ID).
 /// Overwrites only if the incoming timestamp is newer.
@@ -359,6 +377,8 @@ pub fn delete_party(id: u64) {
     store().delete(&party_key(id));
 }
 
+// MARK: - Alert persistence
+
 /// Save an alert to the local cache (keyed by alert ID).
 #[uniffi::export]
 pub fn save_alert(alert: AlertProfile) -> bool {
@@ -413,6 +433,8 @@ pub fn load_alerts_since(since_unix_secs: u64) -> Vec<AlertProfile> {
 pub fn delete_alert(id: u64) {
     store().delete(&alert_key(id));
 }
+
+// MARK: - Message persistence
 
 pub const CONTENT_TYPE_MESSAGE: u16 = 0x0040;
 pub const CONTENT_TYPE_MESSAGE_BACKFILL: u16 = 0x0041;
@@ -524,6 +546,8 @@ pub fn delete_conversation(conversation_id: String) {
     }
 }
 
+// MARK: - Relationship state
+
 /// Tracks the relationship between us and a specific peer.
 /// Stored in SQLite under "fratrat/rel/<peer_id>".
 /// The state machine enforces the invite/like guard rules:
@@ -622,6 +646,8 @@ pub struct PeerRelationship {
     pub state: RelationshipState,
 }
 
+// MARK: - Like and Invite payloads
+
 /// Sent as content_type 0x0050 (LIKE) over the peer's DM topic.
 /// conversation_key_enc is the proposed conversation key encrypted
 /// to the recipient's libp2p public key via encrypt_for_peer().
@@ -662,6 +688,8 @@ pub struct InviteAcceptPayload {
     pub timestamp: u64,
 }
 
+// MARK: - SwiftEventHandler
+
 #[uniffi::export(callback_interface)]
 pub trait SwiftEventHandler: Send + Sync {
     fn on_message(
@@ -675,17 +703,23 @@ pub trait SwiftEventHandler: Send + Sync {
     fn on_peer_disconnected(&self, peer_id: String);
     fn on_connection_status(&self, status: String);
     fn on_send_failed(&self, conversation: String);
+    // ── Profile callbacks ────────────────────────────────────────────
     fn on_profile_received(&self, profile: PeerProfile);
     fn on_profiles_backfilled(&self, profiles: Vec<PeerProfile>);
+    // ── Party callbacks ──────────────────────────────────────────────
     fn on_party_received(&self, party: PartyProfile);
     fn on_parties_backfilled(&self, parties: Vec<PartyProfile>);
+    // ── Alert callbacks ──────────────────────────────────────────────
     fn on_alert_received(&self, alert: AlertProfile);
     fn on_alerts_backfilled(&self, alerts: Vec<AlertProfile>);
+    // ── Message callbacks ────────────────────────────────────────────
     fn on_message_received(&self, message: StoredMessage);
     fn on_messages_backfilled(&self, messages: Vec<StoredMessage>);
+    // ── Like callbacks ───────────────────────────────────────────────
     fn on_like_received(&self, payload: LikePayload);
     fn on_like_back_received(&self, payload: LikeBackPayload);
     fn on_like_declined(&self, peer_id: String);
+    // ── Invite callbacks ─────────────────────────────────────────────
     fn on_invite_received(&self, payload: InvitePayload);
     fn on_invite_accepted(&self, payload: InviteAcceptPayload);
     fn on_invite_declined(&self, peer_id: String);
@@ -708,6 +742,7 @@ impl EventHandler for SwiftHandlerBridge {
                 peer_id,
                 ..
             } => match *content_type {
+                // ── Incoming profile announcement ────────────────────────
                 // Peer is announcing themselves. We:
                 // 1. Fire on_profile_received so Swift updates the UI
                 // 2. Persist to our SQLite cache
@@ -736,6 +771,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Direct profile reply ─────────────────────────────────
                 // Response to our announcement — just store and notify.
                 CONTENT_TYPE_PROFILE_REPLY => {
                     if let Ok(profile) = postcard::from_bytes::<PeerProfile>(payload) {
@@ -746,6 +782,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Backfill batch ───────────────────────────────────────
                 // A peer is sending us profiles of peers we missed while
                 // offline. Store all of them and notify Swift in one call.
                 CONTENT_TYPE_PROFILE_BACKFILL => {
@@ -757,16 +794,17 @@ impl EventHandler for SwiftHandlerBridge {
                                 .and_then(|b| postcard::from_bytes::<PeerProfile>(&b).ok())
                                 .map(|p| p.timestamp)
                                 .unwrap_or(0);
-                            if profile.timestamp > existing_ts
-                                && let Ok(bytes) = postcard::to_allocvec(profile)
-                            {
-                                self.store.set(&peer_profile_key(&profile.peer_id), bytes);
+                            if profile.timestamp > existing_ts {
+                                if let Ok(bytes) = postcard::to_allocvec(profile) {
+                                    self.store.set(&peer_profile_key(&profile.peer_id), bytes);
+                                }
                             }
                         }
                         self.inner.on_profiles_backfilled(profiles);
                     }
                 }
 
+                // ── Party announce ───────────────────────────────────────
                 CONTENT_TYPE_PARTY => {
                     if let Ok(party) = postcard::from_bytes::<PartyProfile>(payload) {
                         save_if_newer(
@@ -780,6 +818,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Party reply ──────────────────────────────────────────
                 CONTENT_TYPE_PARTY_REPLY => {
                     if let Ok(party) = postcard::from_bytes::<PartyProfile>(payload) {
                         save_if_newer(
@@ -793,6 +832,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Party backfill ───────────────────────────────────────
                 CONTENT_TYPE_PARTY_BACKFILL => {
                     if let Ok(parties) = postcard::from_bytes::<Vec<PartyProfile>>(payload) {
                         for party in &parties {
@@ -808,6 +848,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Alert announce ───────────────────────────────────────
                 CONTENT_TYPE_ALERT => {
                     if let Ok(alert) = postcard::from_bytes::<AlertProfile>(payload) {
                         save_if_newer(
@@ -821,6 +862,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Alert reply ──────────────────────────────────────────
                 CONTENT_TYPE_ALERT_REPLY => {
                     if let Ok(alert) = postcard::from_bytes::<AlertProfile>(payload) {
                         save_if_newer(
@@ -834,6 +876,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Alert backfill ───────────────────────────────────────
                 CONTENT_TYPE_ALERT_BACKFILL => {
                     if let Ok(alerts) = postcard::from_bytes::<Vec<AlertProfile>>(payload) {
                         for alert in &alerts {
@@ -849,20 +892,22 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Chat message ─────────────────────────────────────────
                 // Persist immediately so it survives app restarts, then
                 // notify Swift. Dedup by message_id on the Swift side.
                 CONTENT_TYPE_MESSAGE => {
                     if let Ok(msg) = postcard::from_bytes::<StoredMessage>(payload) {
                         let key = message_key(&msg.conversation_id, &msg.message_id);
-                        if self.store.get(&key).is_none()
-                            && let Ok(bytes) = postcard::to_allocvec(&msg)
-                        {
-                            self.store.set(&key, bytes);
+                        if self.store.get(&key).is_none() {
+                            if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                                self.store.set(&key, bytes);
+                            }
                         }
                         self.inner.on_message_received(msg);
                     }
                 }
 
+                // ── Message backfill ─────────────────────────────────────
                 // Batch of messages the peer missed while offline.
                 // Only store messages we haven't seen before.
                 CONTENT_TYPE_MESSAGE_BACKFILL => {
@@ -887,6 +932,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Like received ─────────────────────────────────────────
                 // Store relationship state as LikedBy so we know to
                 // show an incoming like notification and can later
                 // match or decline. The encrypted key stays in the
@@ -904,6 +950,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Like back (mutual match) ──────────────────────────────
                 // Update our state to Matched — the conversation is open.
                 CONTENT_TYPE_LIKE_BACK => {
                     if let Ok(payload_inner) = postcard::from_bytes::<LikeBackPayload>(payload) {
@@ -918,6 +965,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Like declined ─────────────────────────────────────────
                 CONTENT_TYPE_LIKE_DECLINED => {
                     let peer_id_str = peer_id.to_string();
                     let state = RelationshipState::Declined;
@@ -927,6 +975,7 @@ impl EventHandler for SwiftHandlerBridge {
                     self.inner.on_like_declined(peer_id_str);
                 }
 
+                // ── Direct invite received ────────────────────────────────
                 // Store as InviteReceived — Swift shows an incoming
                 // invite notification with Accept / Decline.
                 CONTENT_TYPE_INVITE => {
@@ -944,6 +993,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Invite accepted ───────────────────────────────────────
                 // Update our InviteSent state to InviteAccepted.
                 CONTENT_TYPE_INVITE_ACCEPT => {
                     if let Ok(accept) = postcard::from_bytes::<InviteAcceptPayload>(payload) {
@@ -958,6 +1008,7 @@ impl EventHandler for SwiftHandlerBridge {
                     }
                 }
 
+                // ── Invite declined ───────────────────────────────────────
                 CONTENT_TYPE_INVITE_DECLINE => {
                     let peer_id_str = peer_id.to_string();
                     let state = RelationshipState::Declined;
@@ -1113,37 +1164,38 @@ impl EventHandler for SwiftHandlerBridge {
                     // 6. Re-send any pending like or invite that the peer
                     //    missed while offline — keyed by their peer_id.
                     let rel_key = relationship_key(&peer_id_str);
-                    if let Some(rel_bytes) = store.get(&rel_key)
-                        && let Ok(state) = postcard::from_bytes::<RelationshipState>(&rel_bytes)
-                    {
-                        match state {
-                            RelationshipState::InviteSent { .. } => {
-                                // Re-send the stored invite payload
-                                let invite_key = format!("fratrat/pending_invite/{}", peer_id_str);
-                                if let Some(inv_bytes) = store.get(&invite_key) {
-                                    ZRPHandle::send_typed(
-                                        tx_clone.clone(),
-                                        format!("fratrat/v1/dm/{}", peer_id_str),
-                                        inv_bytes,
-                                        CONTENT_TYPE_INVITE,
-                                    )
-                                    .await;
+                    if let Some(rel_bytes) = store.get(&rel_key) {
+                        if let Ok(state) = postcard::from_bytes::<RelationshipState>(&rel_bytes) {
+                            match state {
+                                RelationshipState::InviteSent { .. } => {
+                                    // Re-send the stored invite payload
+                                    let invite_key =
+                                        format!("fratrat/pending_invite/{}", peer_id_str);
+                                    if let Some(inv_bytes) = store.get(&invite_key) {
+                                        ZRPHandle::send_typed(
+                                            tx_clone.clone(),
+                                            format!("fratrat/v1/dm/{}", peer_id_str),
+                                            inv_bytes,
+                                            CONTENT_TYPE_INVITE,
+                                        )
+                                        .await;
+                                    }
                                 }
-                            }
-                            RelationshipState::Liked => {
-                                // Re-send the stored like payload
-                                let like_key = format!("fratrat/pending_like/{}", peer_id_str);
-                                if let Some(like_bytes) = store.get(&like_key) {
-                                    ZRPHandle::send_typed(
-                                        tx_clone.clone(),
-                                        format!("fratrat/v1/dm/{}", peer_id_str),
-                                        like_bytes,
-                                        CONTENT_TYPE_LIKE,
-                                    )
-                                    .await;
+                                RelationshipState::Liked => {
+                                    // Re-send the stored like payload
+                                    let like_key = format!("fratrat/pending_like/{}", peer_id_str);
+                                    if let Some(like_bytes) = store.get(&like_key) {
+                                        ZRPHandle::send_typed(
+                                            tx_clone.clone(),
+                                            format!("fratrat/v1/dm/{}", peer_id_str),
+                                            like_bytes,
+                                            CONTENT_TYPE_LIKE,
+                                        )
+                                        .await;
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 });
@@ -1173,6 +1225,8 @@ impl EventHandler for SwiftHandlerBridge {
         true
     }
 }
+
+// MARK: - NodeIdentity
 
 #[derive(uniffi::Object)]
 pub struct NodeIdentity {
@@ -1207,6 +1261,31 @@ impl NodeIdentity {
     pub fn peer_id_string(&self) -> String {
         self.inner.peer_id_string()
     }
+
+    /// Generate 32 random bytes for use as a conversation key.
+    pub fn generate_conversation_key(&self) -> Vec<u8> {
+        CoreIdentity::generate_conversation_key()
+    }
+
+    /// Encrypt plaintext so only the holder of peer_id's private key
+    /// can decrypt it. Returns [ephemeral_pubkey(32) || nonce(12) || ciphertext].
+    /// Call this before building a LikePayload or InvitePayload.
+    pub fn encrypt_for_peer(
+        &self,
+        plaintext: Vec<u8>,
+        peer_id: String,
+    ) -> Result<Vec<u8>, MeshError> {
+        self.inner
+            .encrypt_for_peer(&plaintext, &peer_id)
+            .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
+    }
+
+    /// Decrypt a value encrypted by encrypt_for_peer using our private key.
+    pub fn decrypt(&self, ciphertext: Vec<u8>) -> Result<Vec<u8>, MeshError> {
+        self.inner
+            .decrypt(&ciphertext)
+            .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
+    }
 }
 
 impl Default for NodeIdentity {
@@ -1216,6 +1295,8 @@ impl Default for NodeIdentity {
         }
     }
 }
+
+// MARK: - TransportConfig
 
 #[derive(uniffi::Object)]
 pub struct TransportConfig {
@@ -1231,6 +1312,8 @@ impl TransportConfig {
         }
     }
 }
+
+// MARK: - MeshNode
 
 #[derive(uniffi::Object)]
 pub struct MeshNode {
@@ -1304,6 +1387,8 @@ impl MeshNode {
         })
     }
 
+    // MARK: - Messaging
+
     pub async fn subscribe(&self, topic: String) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.subscribe(topic).await;
@@ -1339,6 +1424,8 @@ impl MeshNode {
             Err(MeshError::ConnectionFailed)
         }
     }
+
+    // MARK: - Profile
 
     pub async fn announce_profile(&self, profile: PeerProfile) -> Result<(), MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
@@ -1407,6 +1494,8 @@ impl MeshNode {
         }
     }
 
+    // MARK: - Like flow
+
     /// Send a like to a peer. Persists the payload so it can be
     /// re-sent via backfill if the peer was offline when we sent it.
     /// Caller must have already encrypted conversation_key to the
@@ -1467,6 +1556,8 @@ impl MeshNode {
             Err(MeshError::ConnectionFailed)
         }
     }
+
+    // MARK: - Direct invite flow
 
     /// Send a direct invite to a named peer. Persists for offline delivery.
     /// Caller must have already encrypted conversation_key to the
@@ -1532,6 +1623,8 @@ impl MeshNode {
         }
     }
 
+    // MARK: - Blob / photo storage
+
     pub async fn upload_photo(&self, data: Vec<u8>) -> Result<String, MeshError> {
         if let Some(h) = self.handle.lock().await.as_ref() {
             h.upload_blob(data).await.map_err(MeshError::from)
@@ -1562,12 +1655,16 @@ impl MeshNode {
         }
     }
 
+    // MARK: - Lifecycle
+
     pub async fn shutdown(&self) {
         if let Some(h) = self.handle.lock().await.take() {
             h.shutdown().await;
         }
     }
 }
+
+// MARK: - Relay discovery
 
 #[uniffi::export]
 pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
@@ -1596,6 +1693,8 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
         }
     })
 }
+
+// MARK: - Records
 
 #[derive(uniffi::Record)]
 pub struct RelayInfo {
