@@ -546,7 +546,35 @@ pub fn delete_conversation(conversation_id: String) {
     }
 }
 
-// MARK: - Relationship state
+/// Wipe all app data from SQLite except the identity keypair.
+/// Used from Settings → "Clear cache". Does NOT clear:
+///   - ghost/identity/keypair  (would change our peer ID)
+///   - ghost/identity/peer_id
+/// Clears everything else: profiles, parties, alerts, messages,
+/// relationships, pending likes/invites, peer last-seen timestamps.
+#[uniffi::export]
+pub fn clear_all_caches() {
+    let store = store();
+    let prefixes = [
+        PEER_PROFILE_PREFIX,
+        PEER_LAST_SEEN_PREFIX,
+        PARTY_PREFIX,
+        ALERT_PREFIX,
+        MESSAGE_PREFIX,
+        RELATIONSHIP_PREFIX,
+        "fratrat/pending_like/",
+        "fratrat/pending_invite/",
+        PROFILE_STORE_KEY, // own profile — will be re-set on next save
+    ];
+    for prefix in prefixes {
+        for key in store.list(prefix) {
+            store.delete(&key);
+        }
+    }
+    // PROFILE_STORE_KEY is an exact key, not a prefix — delete directly
+    store.delete(PROFILE_STORE_KEY);
+    tracing::info!("clear_all_caches: done");
+}
 
 /// Tracks the relationship between us and a specific peer.
 /// Stored in SQLite under "fratrat/rel/<peer_id>".
