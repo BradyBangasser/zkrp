@@ -1,8 +1,10 @@
 mod behavior;
 mod blob;
+mod config;
 mod relay;
 use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
 use crate::blob::BlobService;
+use crate::config::RelayConfig;
 use crate::proto::blob_store_server::BlobStoreServer;
 use crate::relay::RelayServiceImpl;
 use futures::StreamExt;
@@ -27,16 +29,17 @@ pub struct RelayState {
     pub connected_peers: Arc<Mutex<Vec<libp2p::PeerId>>>,
     pub messages_relayed: Arc<std::sync::atomic::AtomicU64>,
     pub started_at: std::time::Instant,
+    pub config: RelayConfig,
 }
 
 async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("0.0.0.0:{}", port).parse()?;
 
+    let bucket = state.config.blob_bucket.clone();
+
     Server::builder()
         .add_service(RelayServiceServer::new(RelayServiceImpl { state }))
-        .add_service(BlobStoreServer::new(
-            BlobService::new("fratrat".into()).await,
-        ))
+        .add_service(BlobStoreServer::new(BlobService::new(bucket).await))
         .serve(addr)
         .await?;
 
@@ -46,6 +49,8 @@ async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::E
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+
+    let relay_config = config::load_config().await;
 
     let identity = NodeIdentity::generate();
     let port = std::env::var("PORT")
@@ -81,6 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         messages_relayed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         started_at: std::time::Instant::now(),
         port: port.into(),
+        config: relay_config,
     };
 
     let grpc_state = state.clone();

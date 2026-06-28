@@ -9,6 +9,7 @@ COPY . .
 RUN cargo build --release -p controller
 
 FROM gcr.io/distroless/cc-debian13:latest
-COPY --from=build /opt/zrp/target/release/controller /controller
-ENV IDENTITY_PATH=/data/relay_identity.key
-ENTRYPOINT [ "/controller" ]
+RUN useradd -r -s /bin/false -d /data zkrp
+COPY --from=builder /build/target/release/controller /usr/local/bin/relay
+USER zkrp
+ENTRYPOINT ["/usr/local/bin/relay"]
