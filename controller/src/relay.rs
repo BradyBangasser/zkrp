@@ -94,12 +94,12 @@ impl RelayService for RelayServiceImpl {
         };
 
         let prefix = if is_domain {
-            "dns"
+            "dns4"
         } else {
             match host_str.parse::<IpAddr>() {
                 Ok(IpAddr::V4(_)) => "ip4",
                 Ok(IpAddr::V6(_)) => "ip6",
-                Err(_) => "dns",
+                Err(_) => "dns4",
             }
         };
 

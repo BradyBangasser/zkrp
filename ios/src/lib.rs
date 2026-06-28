@@ -1764,7 +1764,19 @@ pub async fn upload_photo_blob(
     grpc_addr: String,
     cf_domain: String,
 ) -> Result<String, MeshError> {
-    use proto::{UploadChunk, blob_store_client::BlobStoreClient};
+    tokio::task::spawn(async move { upload_blob(data, grpc_addr, cf_domain).await })
+        .await
+        .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
+}
+
+async fn upload_blob(
+    data: Vec<u8>,
+    grpc_addr: String,
+    cf_domain: String,
+) -> Result<String, MeshError> {
+    use crate::blob_proto::UploadChunk;
+    use crate::blob_proto::blob_store_client::BlobStoreClient;
+
     let channel = tonic::transport::Channel::from_shared(grpc_addr)
         .map_err(|_| MeshError::InvalidAddress)?
         .connect()
