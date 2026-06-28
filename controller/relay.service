@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=exec
+TimeoutStartSec=infinity
 ExecStartPre=git -C /opt/zkrp/repo pull --ff-only
 ExecStartPre=podman build \
     --tag localhost/zkrp-relay:latest \
