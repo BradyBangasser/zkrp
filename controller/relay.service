@@ -18,7 +18,7 @@ ExecStart=podman run \
     --publish 9000:9000 \
     --publish 9001:9001 \
     --volume /var/lib/zkrp:/data:Z \
-    --volume /run/credentials/zkrp-relay.service:/run/credentials:ro,Z \
+    --volume /run/credentials/relay.service:/run/credentials:ro,Z \
     --env CREDENTIALS_DIRECTORY=/run/credentials \
     --env AWS_REGION=us-east-2 \
     --env BLOB_BUCKET=fratrat \
