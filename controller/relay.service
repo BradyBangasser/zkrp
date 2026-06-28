@@ -9,7 +9,6 @@ User=zkrp
 Group=zkrp
 
 Environment=HOME=/opt/zkrp
-Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=REGISTRY_AUTH_FILE=/opt/zkrp/.config/containers/auth.json
 
 ExecStartPre=git -C /opt/zkrp/repo pull --ff-only
