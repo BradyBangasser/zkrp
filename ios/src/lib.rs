@@ -1774,8 +1774,8 @@ async fn upload_blob(
     grpc_addr: String,
     cf_domain: String,
 ) -> Result<String, MeshError> {
-    use crate::blob_proto::UploadChunk;
-    use crate::blob_proto::blob_store_client::BlobStoreClient;
+    use crate::proto::UploadChunk;
+    use crate::proto::blob_store_client::BlobStoreClient;
 
     let channel = tonic::transport::Channel::from_shared(grpc_addr)
         .map_err(|_| MeshError::InvalidAddress)?
