@@ -6,7 +6,7 @@ WORKDIR /build
 COPY . .
 RUN cargo build --release -p controller
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN useradd -r -s /bin/false -d /data zkrp
 COPY --from=builder /build/target/release/controller /usr/local/bin/zkrp-relay
 USER zkrp
