@@ -1408,21 +1408,34 @@ impl MeshNode {
             .map_err(|e| MeshError::ConnectionError { msg: e })?;
 
         let my_peer_id = identity.peer_id_string();
-        handle
-            .subscribe(format!("fratrat/v1/profiles/dm/{}", my_peer_id))
-            .await;
-        handle
-            .subscribe(format!("fratrat/v1/parties/dm/{}", my_peer_id))
-            .await;
-        handle
-            .subscribe(format!("fratrat/v1/alerts/dm/{}", my_peer_id))
-            .await;
-        handle
-            .subscribe(format!("fratrat/v1/dm/{}", my_peer_id))
-            .await;
-        handle.subscribe("fratrat/v1/profiles".to_string()).await;
-        handle.subscribe("fratrat/v1/parties".to_string()).await;
-        handle.subscribe("fratrat/v1/alerts".to_string()).await;
+        let setup_handle = handle.clone();
+
+        get_runtime()
+            .spawn(async move {
+                setup_handle
+                    .subscribe(format!("fratrat/v1/profiles/dm/{}", my_peer_id))
+                    .await;
+                setup_handle
+                    .subscribe(format!("fratrat/v1/parties/dm/{}", my_peer_id))
+                    .await;
+                setup_handle
+                    .subscribe(format!("fratrat/v1/alerts/dm/{}", my_peer_id))
+                    .await;
+                setup_handle
+                    .subscribe(format!("fratrat/v1/dm/{}", my_peer_id))
+                    .await;
+                setup_handle
+                    .subscribe("fratrat/v1/profiles".to_string())
+                    .await;
+                setup_handle
+                    .subscribe("fratrat/v1/parties".to_string())
+                    .await;
+                setup_handle
+                    .subscribe("fratrat/v1/alerts".to_string())
+                    .await;
+            })
+            .await
+            .map_err(|_| MeshError::Unknown)?;
 
         Ok(Self {
             handle: Mutex::new(Some(handle)),
@@ -1764,7 +1777,8 @@ pub async fn upload_photo_blob(
     grpc_addr: String,
     cf_domain: String,
 ) -> Result<String, MeshError> {
-    tokio::task::spawn(async move { upload_blob(data, grpc_addr, cf_domain).await })
+    crate::get_runtime()
+        .spawn(async move { upload_blob(data, grpc_addr, cf_domain).await })
         .await
         .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
 }
