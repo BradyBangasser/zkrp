@@ -1,15 +1,10 @@
-FROM rust:1 as build
-WORKDIR /opt/zrp
-
-RUN apt-get update -y
-RUN apt-get install protobuf-compiler -y
-
+FROM rust:1.78-slim AS builder
+WORKDIR /build
 COPY . .
-
 RUN cargo build --release -p controller
 
-FROM gcr.io/distroless/cc-debian13:latest
+FROM debian:bookworm-slim
 RUN useradd -r -s /bin/false -d /data zkrp
-COPY --from=builder /build/target/release/controller /usr/local/bin/relay
+COPY --from=builder /build/target/release/controller /usr/local/bin/zkrp-relay
 USER zkrp
-ENTRYPOINT ["/usr/local/bin/relay"]
+ENTRYPOINT ["/usr/local/bin/zkrp-relay"]
