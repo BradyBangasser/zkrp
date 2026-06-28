@@ -6,15 +6,17 @@ AWS_KEY_ID="${2:?}"
 AWS_SECRET="${3:?}"
 
 useradd -r -m -d /opt/zkrp -s /bin/false zkrp 2>/dev/null || true
+ZKRP_UID=$(id -u zkrp)
+loginctl enable-linger zkrp
 
 mkdir -p /opt/zkrp/repo /var/lib/zkrp /etc/zkrp/credentials
-chown zkrp:zkrp /opt/zkrp/repo /var/lib/zkrp
-
-ZKRP_UID=$(id -u zkrp)
+mkdir -p /opt/zkrp/.config/containers
+mkdir -p /opt/zkrp/.local/share/containers
+mkdir -p /var/lib/zkrp
 mkdir -p /run/user/$ZKRP_UID
-chown zkrp:zkrp /run/user/$ZKRP_UID
 chmod 700 /run/user/$ZKRP_UID
-loginctl enable-linger zkrp
+chown -R zkrp:zkrp /opt/zkrp /var/lib/zkrp
+chown -R zkrp:zkrp /run/user/$ZKRP_UID
 
 sudo -u zkrp git clone "$REPO_URL" /opt/zkrp/repo
 
