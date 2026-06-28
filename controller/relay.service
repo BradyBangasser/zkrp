@@ -8,9 +8,16 @@ Type=exec
 User=zkrp
 Group=zkrp
 
+Environment=HOME=/opt/zkrp
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=REGISTRY_AUTH_FILE=/opt/zkrp/.config/containers/auth.json
+
+ExecStartPre=mkdir -p /opt/zkrp/.config/containers
+ExecStartPre=mkdir -p /opt/zkrp/.local/share/containers
+
 ExecStartPre=git -C /opt/zkrp/repo pull --ff-only
 ExecStartPre=podman build \
-    --tag localhost/zkrp-relay:latest \
+    --tag localhost/zrp-relay:latest \
     --file /opt/zkrp/repo/controller/Containerfile \
     /opt/zkrp/repo
 
