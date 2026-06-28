@@ -5,18 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-User=zkrp
-Group=zkrp
-
-Environment=HOME=/opt/zkrp
-Environment=REGISTRY_AUTH_FILE=/opt/zkrp/.config/containers/auth.json
-
 ExecStartPre=git -C /opt/zkrp/repo pull --ff-only
 ExecStartPre=podman build \
-    --tag localhost/zrp-relay:latest \
+    --tag localhost/zkrp-relay:latest \
     --file /opt/zkrp/repo/controller/Containerfile \
     /opt/zkrp/repo
-
 ExecStart=podman run \
     --rm \
     --name zkrp-relay \
@@ -24,22 +17,18 @@ ExecStart=podman run \
     --publish 9000:9000 \
     --publish 9001:9001 \
     --volume /var/lib/zkrp:/data:Z \
-    --volume /run/credentials/zrp-relay.service:/run/credentials:ro,Z \
+    --volume /run/credentials/zkrp-relay.service:/run/credentials:ro,Z \
     --env CREDENTIALS_DIRECTORY=/run/credentials \
     --env AWS_REGION=us-east-2 \
     --env BLOB_BUCKET=fratrat \
     --env CF_DOMAIN=blobfront.infra.zkrp.net \
     localhost/zkrp-relay:latest
-
 ExecStop=podman stop zkrp-relay
-
 LoadCredentialEncrypted=aws-key-id:/etc/zkrp/credentials/aws-key-id.cred
 LoadCredentialEncrypted=aws-secret:/etc/zkrp/credentials/aws-secret.cred
-
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-
 Restart=always
 RestartSec=10
 
