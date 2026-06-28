@@ -9,6 +9,10 @@ use std::sync::Once;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
+mod proto {
+    tonic::include_proto!("zrp.relay.v1");
+}
+
 static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 pub const CONTENT_TYPE_PROFILE: u16 = 0x0010;
@@ -131,6 +135,7 @@ pub struct PeerProfile {
     pub year: String,
     pub bio: String,
     pub photo_blob_ids: Vec<String>,
+    pub photo_blob_keys: Vec<Vec<u8>>,
     pub timestamp: u64,
 }
 
@@ -1753,7 +1758,34 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
     })
 }
 
-// MARK: - Records
+#[uniffi::export]
+pub async fn upload_photo_blob(
+    data: Vec<u8>,
+    grpc_addr: String,
+    cf_domain: String,
+) -> Result<String, MeshError> {
+    use proto::{UploadChunk, blob_store_client::BlobStoreClient};
+    let channel = tonic::transport::Channel::from_shared(grpc_addr)
+        .map_err(|_| MeshError::InvalidAddress)?
+        .connect()
+        .await
+        .map_err(|_| MeshError::ConnectionFailed)?;
+
+    let mut client = BlobStoreClient::new(channel);
+
+    let chunks: Vec<UploadChunk> = data
+        .chunks(64 * 1024)
+        .map(|c| UploadChunk { data: c.to_vec() })
+        .collect();
+
+    let response = client
+        .upload_blob(tokio_stream::iter(chunks))
+        .await
+        .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
+
+    let blob_id = response.into_inner().blob_id;
+    Ok(format!("https://{}{}", cf_domain, blob_id))
+}
 
 #[derive(uniffi::Record)]
 pub struct RelayInfo {

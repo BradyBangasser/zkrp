@@ -75,3 +75,13 @@ service RelayService {
   rpc Register(RegisterRequest)             returns (google.protobuf.Empty);
   rpc Deregister(DeregisterRequest)         returns (google.protobuf.Empty);
 }
+
+message UploadChunk  { bytes data = 1; }
+message UploadResponse { string blob_id = 1; }
+message DownloadRequest { string blob_id = 1; }
+message BlobChunk    { bytes data = 1; }
+
+service BlobStore {
+  rpc UploadBlob(stream UploadChunk) returns (UploadResponse);
+  rpc DownloadBlob(DownloadRequest) returns (stream BlobChunk);
+}

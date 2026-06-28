@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::IntervalStream;
-use tonic::{Request, Response, Status, transport::Server};
+use tonic::{Request, Response, Status};
 
 #[cfg(not(debug_assertions))]
 fn get_fallback_address(_: &Request<()>) -> String {
@@ -16,20 +16,15 @@ fn get_fallback_address(req: &Request<()>) -> String {
     req.local_addr().unwrap().ip().to_string()
 }
 
-pub mod proto {
-    tonic::include_proto!("zrp.relay.v1");
-}
-
-use proto::{
+use crate::proto::{
     DeregisterRequest, HealthResponse, RegisterRequest, RelayInfo, RelayListResponse, RelayStats,
-    StatsResponse, WatchStatsRequest,
-    relay_service_server::{RelayService, RelayServiceServer},
+    StatsResponse, WatchStatsRequest, relay_service_server::RelayService,
 };
 
 type WatchStatsStream = Pin<Box<dyn futures::Stream<Item = Result<StatsResponse, Status>> + Send>>;
 
 pub struct RelayServiceImpl {
-    state: RelayState,
+    pub state: RelayState,
 }
 
 #[tonic::async_trait]
@@ -164,15 +159,4 @@ impl RelayServiceImpl {
             ..Default::default()
         }
     }
-}
-
-pub async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = format!("0.0.0.0:{}", port).parse()?;
-
-    Server::builder()
-        .add_service(RelayServiceServer::new(RelayServiceImpl { state }))
-        .serve(addr)
-        .await?;
-
-    Ok(())
 }

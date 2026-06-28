@@ -1,13 +1,24 @@
 mod behavior;
-mod grpc;
+mod blob;
+mod relay;
 use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
+use crate::blob::BlobService;
+use crate::proto::blob_store_server::BlobStoreServer;
+use crate::relay::RelayServiceImpl;
 use futures::StreamExt;
 use libghost::{identity::NodeIdentity, transport::TransportConfig};
 use libp2p::{SwarmBuilder, identify, mdns, noise, swarm::SwarmEvent, yamux};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tonic::transport::Server;
 use tracing::{Level, debug, info};
+
+pub mod proto {
+    tonic::include_proto!("zrp.relay.v1");
+}
+
+use crate::proto::relay_service_server::RelayServiceServer;
 
 #[derive(Clone)]
 pub struct RelayState {
@@ -16,6 +27,20 @@ pub struct RelayState {
     pub connected_peers: Arc<Mutex<Vec<libp2p::PeerId>>>,
     pub messages_relayed: Arc<std::sync::atomic::AtomicU64>,
     pub started_at: std::time::Instant,
+}
+
+async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = format!("0.0.0.0:{}", port).parse()?;
+
+    Server::builder()
+        .add_service(RelayServiceServer::new(RelayServiceImpl { state }))
+        .add_service(BlobStoreServer::new(
+            BlobService::new("fratrat".into()).await,
+        ))
+        .serve(addr)
+        .await?;
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -60,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let grpc_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = grpc::serve(grpc_port, grpc_state).await {
+        if let Err(e) = serve(grpc_port, grpc_state).await {
             tracing::error!("gRPC server error: {e}");
         }
     });
