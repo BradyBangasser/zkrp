@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
                     }
                 }
-                other => info!("Swarm Event: {:?}", other),
+                other => debug!("Swarm Event: {:?}", other),
             }
         }
     }

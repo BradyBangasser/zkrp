@@ -7,12 +7,15 @@ use tokio_stream::wrappers::IntervalStream;
 use tonic::{Request, Response, Status};
 
 #[cfg(not(debug_assertions))]
-fn get_fallback_address(_: &Request<()>) -> String {
-    "relay.a.central.us.infra.zkrp.net".into()
+async fn get_fallback_address(_: &Request<()>) -> String {
+    public_ip::addr_v4()
+        .await
+        .and_then(|ip| Some(ip.to_string()))
+        .unwrap_or("relay.a.central.eu.infra.zkrp.net".into())
 }
 
 #[cfg(debug_assertions)]
-fn get_fallback_address(req: &Request<()>) -> String {
+async fn get_fallback_address(req: &Request<()>) -> String {
     req.local_addr().unwrap().ip().to_string()
 }
 
@@ -90,7 +93,9 @@ impl RelayService for RelayServiceImpl {
             (host, is_domain)
         } else {
             tracing::warn!("No host header on request, falling back to loopback");
-            (get_fallback_address(&req), false)
+            let host_str = get_fallback_address(&req).await;
+            let is_domain = host_str.parse::<IpAddr>().is_err();
+            (host_str, is_domain)
         };
 
         let prefix = if is_domain {
