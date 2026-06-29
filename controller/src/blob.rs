@@ -1,4 +1,5 @@
-use aws_sdk_s3 as s3;
+use aws_sdk_s3::{self as s3, primitives::ByteStream};
+use chrono::prelude::*;
 use ring::rand::SecureRandom;
 use std::pin::Pin;
 
@@ -22,10 +23,24 @@ impl BlobService {
     pub async fn new(bucket: String) -> Self {
         let config = aws_config::load_from_env().await;
 
-        Self {
-            client: s3::Client::new(&config),
-            bucket,
-        }
+        let client = s3::Client::new(&config);
+        let now = Utc::now();
+
+        client
+            .put_object()
+            .bucket(&bucket)
+            .key(format!(
+                "logs/start/{}/{}/{}",
+                now.year(),
+                now.month(),
+                now.day0()
+            ))
+            .body(ByteStream::from_static("I started!".as_bytes()))
+            .content_type("text/plain")
+            .send()
+            .await
+            .expect("Failed to write log");
+        Self { client, bucket }
     }
 }
 

@@ -48,6 +48,7 @@ async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::E
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let _ = dotenv::dotenv();
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let relay_config = config::load_config().await;

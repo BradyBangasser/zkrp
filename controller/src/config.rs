@@ -13,14 +13,19 @@ fn credential(name: &str) -> String {
     })
 }
 
-pub async fn load_config() -> RelayConfig {
-    let key_id = credential("aws-key-id");
-    let secret = credential("aws-secret");
+fn expect_or_load_cred(var: &str, cred: &str) {
+    if std::env::var(var).is_err() {
+        let cred = credential(cred);
 
-    unsafe {
-        std::env::set_var("AWS_ACCESS_KEY_ID", &key_id);
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", &secret);
+        unsafe {
+            std::env::set_var(var, &cred);
+        }
     }
+}
+
+pub async fn load_config() -> RelayConfig {
+    expect_or_load_cred("AWS_ACCESS_KEY_ID", "aws-key-id");
+    expect_or_load_cred("AWS_SECRET_ACCESS_KEY", "aws-secret");
 
     RelayConfig {
         region: std::env::var("AWS_REGION").expect("AWS_REGION not set"),
