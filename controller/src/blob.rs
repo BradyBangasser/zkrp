@@ -75,7 +75,10 @@ impl BlobStore for BlobService {
             .content_type("application/octet-stream")
             .send()
             .await
-            .map_err(|e| Status::internal(format!("s3 put: {}", e)))?;
+            .map_err(|e| {
+                tracing::error!("Failed to upload blob: {}", e.to_string());
+                Status::internal(format!("s3 put: {}", e))
+            })?;
 
         Ok(Response::new(UploadResponse { blob_id: blob }))
     }
