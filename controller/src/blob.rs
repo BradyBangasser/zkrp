@@ -65,7 +65,7 @@ impl BlobStore for BlobService {
         let sr = ring::rand::SystemRandom::new();
         sr.fill(&mut id_buffer).unwrap();
         let blob_id = id_buffer.encode_hex::<String>();
-        let blob = format!("/blob/{}/{}", &blob_id[0..3], &blob_id[3..]);
+        let blob = format!("blob/{}/{}", &blob_id[0..3], &blob_id[3..]);
         tracing::info!("Inserting blob {}", blob);
         self.client
             .put_object()
