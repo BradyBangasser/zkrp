@@ -76,7 +76,7 @@ impl BlobStore for BlobService {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!("Failed to upload blob: {}", e.to_string());
+                tracing::error!("Failed to upload blob: {:?}", e.to_string());
                 Status::internal(format!("s3 put: {}", e))
             })?;
 
