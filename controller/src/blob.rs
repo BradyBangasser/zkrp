@@ -8,19 +8,22 @@ use hex::ToHex;
 use futures::Stream;
 use tonic::{Request, Response, Status};
 
-use crate::proto::{
-    BlobChunk, DownloadRequest, UploadChunk, UploadResponse, blob_store_server::BlobStore,
+use crate::{
+    config::RelayConfig,
+    proto::{
+        BlobChunk, DownloadRequest, UploadChunk, UploadResponse, blob_store_server::BlobStore,
+    },
 };
 
 const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
 
 pub struct BlobService {
     client: s3::Client,
-    bucket: String,
+    config: RelayConfig,
 }
 
 impl BlobService {
-    pub async fn new(bucket: String) -> Self {
+    pub async fn new(conf: RelayConfig) -> Self {
         let config = aws_config::load_from_env().await;
 
         let client = s3::Client::new(&config);
@@ -28,7 +31,7 @@ impl BlobService {
 
         client
             .put_object()
-            .bucket(&bucket)
+            .bucket(&conf.blob_bucket)
             .key(format!(
                 "logs/start/{}/{}/{}",
                 now.year(),
@@ -40,7 +43,10 @@ impl BlobService {
             .send()
             .await
             .expect("Failed to write log");
-        Self { client, bucket }
+        Self {
+            client,
+            config: conf,
+        }
     }
 }
 
@@ -84,7 +90,7 @@ impl BlobStore for BlobService {
         tracing::info!("Inserting blob {}", blob);
         self.client
             .put_object()
-            .bucket(&self.bucket)
+            .bucket(&self.config.blob_bucket)
             .key(&blob)
             .body(data.into())
             .content_type("application/octet-stream")
@@ -95,6 +101,13 @@ impl BlobStore for BlobService {
                 Status::internal(format!("s3 put: {}", e))
             })?;
 
-        Ok(Response::new(UploadResponse { blob_id: blob }))
+        Ok(Response::new(UploadResponse {
+            blob_url: format!(
+                "https://{}/{}",
+                self.config.cf_domain.trim_end_matches('/'),
+                blob
+            ),
+            blob_id: blob,
+        }))
     }
 }

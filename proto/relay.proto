@@ -77,7 +77,7 @@ service RelayService {
 }
 
 message UploadChunk  { bytes data = 1; }
-message UploadResponse { string blob_id = 1; }
+message UploadResponse { string blob_id = 1; string blob_url = 2;}
 message DownloadRequest { string blob_id = 1; }
 message BlobChunk    { bytes data = 1; }
 

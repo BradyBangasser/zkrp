@@ -35,11 +35,11 @@ pub struct RelayState {
 async fn serve(port: u16, state: RelayState) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("0.0.0.0:{}", port).parse()?;
 
-    let bucket = state.config.blob_bucket.clone();
-
     Server::builder()
+        .add_service(BlobStoreServer::new(
+            BlobService::new(state.config.clone()).await,
+        ))
         .add_service(RelayServiceServer::new(RelayServiceImpl { state }))
-        .add_service(BlobStoreServer::new(BlobService::new(bucket).await))
         .serve(addr)
         .await?;
 

@@ -1772,22 +1772,14 @@ pub fn discover_relays(grpc_addr: String) -> Vec<RelayInfo> {
 }
 
 #[uniffi::export]
-pub async fn upload_photo_blob(
-    data: Vec<u8>,
-    grpc_addr: String,
-    cf_domain: String,
-) -> Result<String, MeshError> {
+pub async fn upload_photo_blob(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshError> {
     crate::get_runtime()
-        .spawn(async move { upload_blob(data, grpc_addr, cf_domain).await })
+        .spawn(async move { upload_blob(data, grpc_addr).await })
         .await
         .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
 }
 
-async fn upload_blob(
-    data: Vec<u8>,
-    grpc_addr: String,
-    cf_domain: String,
-) -> Result<String, MeshError> {
+async fn upload_blob(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshError> {
     use crate::proto::UploadChunk;
     use crate::proto::blob_store_client::BlobStoreClient;
 
@@ -1809,8 +1801,7 @@ async fn upload_blob(
         .await
         .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?;
 
-    let blob_id = response.into_inner().blob_id;
-    Ok(format!("https://{}{}", cf_domain, blob_id))
+    Ok(response.into_inner().blob_url)
 }
 
 #[derive(uniffi::Record)]
