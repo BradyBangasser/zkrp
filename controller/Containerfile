@@ -1,13 +1,15 @@
 FROM rust:1.96-slim AS builder
 RUN apt-get update && apt-get install -y \
   protobuf-compiler \
-  ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
 RUN cargo build --release -p controller
 
 FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y \
+  ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -s /bin/false -d /data zkrp
 COPY --from=builder /build/target/release/controller /usr/local/bin/zkrp-relay
 ENTRYPOINT ["/usr/local/bin/zkrp-relay"]
