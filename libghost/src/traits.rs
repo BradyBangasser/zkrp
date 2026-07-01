@@ -2,11 +2,26 @@ use libp2p::{Multiaddr, PeerId, gossipsub, swarm::NetworkBehaviour};
 
 #[derive(Debug, Clone)]
 pub enum MeshEvent {
-    PeerDiscovered { peer_id: PeerId, addr: Multiaddr },
-    PeerLost { peer_id: PeerId, addr: Multiaddr },
-    RelayReservationAccepted { peer_id: PeerId },
+    PeerDiscovered {
+        peer_id: PeerId,
+        addr: Multiaddr,
+    },
+    PeerLost {
+        peer_id: PeerId,
+        addr: Multiaddr,
+    },
+    RelayReservationAccepted {
+        peer_id: PeerId,
+    },
     RelayReservationFailed,
-    Message { conversation: String, msg: String },
+    Message {
+        conversation: String,
+        msg: String,
+    },
+    Identify {
+        peer_id: PeerId,
+        listen_addrs: Vec<Multiaddr>,
+    },
 }
 
 pub trait MeshBehaviour: NetworkBehaviour {
@@ -25,4 +40,5 @@ pub trait MeshBehaviour: NetworkBehaviour {
         &mut self,
         topic: gossipsub::IdentTopic,
     ) -> Result<(), Box<dyn std::error::Error>>;
+    fn on_identify_received(&mut self, _peer_id: PeerId, _listen_addrs: Vec<Multiaddr>) {}
 }

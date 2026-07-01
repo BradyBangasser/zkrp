@@ -8,6 +8,8 @@ use crate::{
     store::GhostStore,
 };
 use libp2p::dns::{ResolverConfig, ResolverOpts};
+use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
+use libp2p::{Multiaddr, PeerId, multiaddr};
 use prost::Message;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -72,6 +74,8 @@ async fn swarm_task<B>(
     let mut circuit_reserved: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
 
+    let mut relay_multiaddrs: HashMap<PeerId, Multiaddr> = HashMap::new();
+
     let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
     let mut outbox: Vec<PendingMessage> = store
         .list("ghost/outbox/")
@@ -108,151 +112,182 @@ async fn swarm_task<B>(
         tokio::select! {
             biased;
             _ = retry_interval.tick() => {
-                let now = tokio::time::Instant::now();
-                let mut still_pending = Vec::new();
+            let now = tokio::time::Instant::now();
+            let mut still_pending = Vec::new();
 
-                for mut msg in outbox.drain(..) {
-                    if now < msg.next_retry {
-                        still_pending.push(msg);
-                        continue;
+            for mut msg in outbox.drain(..) {
+                if now < msg.next_retry {
+                    still_pending.push(msg);
+                    continue;
+                }
+
+                let topic = libp2p::gossipsub::IdentTopic::new(&msg.topic);
+                match swarm.behaviour_mut().publish(topic, msg.payload.clone()) {
+                    Ok(_) => {
+                        store.delete(&format!("ghost/outbox/{}", msg.id));
+                        tracing::info!("publish succeeded after {} attempts", msg.attempts + 1);
                     }
 
-                    let topic = libp2p::gossipsub::IdentTopic::new(&msg.topic);
-                    match swarm.behaviour_mut().publish(topic, msg.payload.clone()) {
-                        Ok(_) => {
+                    Err(libp2p::gossipsub::PublishError::NoPeersSubscribedToTopic) => {
+                        msg.attempts += 1;
+                        if let Some(delay) = backoff_delay(msg.attempts) {
+                            msg.next_retry = now + delay;
+                            tracing::debug!(
+                                "publish retry {} in {:?}", msg.attempts, delay
+                            );
+                            store.set(
+                                &format!("ghost/outbox/{}", msg.id),
+                                postcard::to_allocvec(&OutboxEntry::from(&msg)).unwrap(),
+                            );
+                            still_pending.push(msg);
+                        } else {
                             store.delete(&format!("ghost/outbox/{}", msg.id));
-                            tracing::info!("publish succeeded after {} attempts", msg.attempts + 1);
-                        }
-
-                        Err(libp2p::gossipsub::PublishError::NoPeersSubscribedToTopic) => {
-                            msg.attempts += 1;
-                            if let Some(delay) = backoff_delay(msg.attempts) {
-                                msg.next_retry = now + delay;
-                                tracing::debug!(
-                                    "publish retry {} in {:?}", msg.attempts, delay
-                                );
-                                store.set(
-                                    &format!("ghost/outbox/{}", msg.id),
-                                    postcard::to_allocvec(&OutboxEntry::from(&msg)).unwrap(),
-                                );
-                                still_pending.push(msg);
-                            } else {
-                                store.delete(&format!("ghost/outbox/{}", msg.id));
-                                tracing::warn!("publish giving up after {} attempts", msg.attempts);
-                                let _ = raw_tx.send(RawEvent::PublishFailed {
-                                    topic: msg.topic.clone(),
-                                }).await;
-                            }
-                        }
-                        Err(e) => {
-                            store.delete(&format!("ghost/outbox/{}", msg.id));
-                            tracing::warn!("publish failed (non-retryable): {e}");
+                            tracing::warn!("publish giving up after {} attempts", msg.attempts);
                             let _ = raw_tx.send(RawEvent::PublishFailed {
                                 topic: msg.topic.clone(),
                             }).await;
                         }
                     }
+                    Err(e) => {
+                        store.delete(&format!("ghost/outbox/{}", msg.id));
+                        tracing::warn!("publish failed (non-retryable): {e}");
+                        let _ = raw_tx.send(RawEvent::PublishFailed {
+                            topic: msg.topic.clone(),
+                        }).await;
+                    }
                 }
-
-                outbox = still_pending;
             }
-        event = swarm.select_next_some() => {
-            match event {
-                SwarmEvent::Behaviour(b_event) => {
-                    if let Some(mesh_event) = B::translate_event(&b_event) {
-                        match mesh_event {
-                            crate::traits::MeshEvent::PeerDiscovered { peer_id, addr } => {
-                                let _ = raw_tx.send(RawEvent::PeerDiscovered {
-                                    peer_id, addr
-                                }).await;
-                            }
-                            crate::traits::MeshEvent::RelayReservationAccepted { peer_id } => {
-                                let _ = raw_tx.send(RawEvent::RelayAccepted { relay_addr: peer_id }).await;
-                            }
-                            crate::traits::MeshEvent::RelayReservationFailed => {
-                                let _ = raw_tx.send(RawEvent::RelayLost).await;
-                            }
-                            _ => {}
-                        }
-                    }
 
-                    if let Some((topic, bytes, propagation_src)) = B::extract_gossip(&b_event) {
-                        let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src }).await;
-                    }
-                }
-                SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                    circuit_reserved.remove(&peer_id);
-                    tracing::info!("Connection closed: {} cause: {:?}", peer_id, cause);
-                    let _ = raw_tx.send(RawEvent::PeerLost {
-                        peer_id
-                    }).await;
-                }
-
-                SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-                    let addr = match &endpoint {
-                        libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
-                        libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
-                    };
-
-                    let _ = raw_tx.send(RawEvent::PeerDiscovered { peer_id, addr }).await;
-
-                    if !circuit_reserved.contains(&peer_id) {
-                        let circuit_addr = relay_addrs.iter().find_map(|r| {
-                            let ma = r.parse::<libp2p::Multiaddr>().ok()?;
-                            let has_peer = ma.iter().any(|p| {
-                                matches!(p, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
-                            });
-                            if has_peer { Some(ma) } else { None }
-                        });
-
-                        if let Some(ma) = circuit_addr {
-                            circuit_reserved.insert(peer_id);
-                            let circuit = format!("{}/p2p-circuit", ma);
-                            match circuit.parse::<libp2p::Multiaddr>() {
-                                Ok(addr) => {
-                                    tracing::info!("Requesting circuit reservation via {}", addr);
-                                    if let Err(e) = swarm.dial(addr) {
-                                        tracing::warn!("Circuit dial failed: {}", e);
+            outbox = still_pending;
+        }
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::Behaviour(b_event) => {
+                        if let Some(mesh_event) = B::translate_event(&b_event) {
+                            match mesh_event {
+                                crate::traits::MeshEvent::PeerDiscovered { peer_id, addr } => {
+                                    let _ = raw_tx.send(RawEvent::PeerDiscovered {
+                                        peer_id, addr
+                                    }).await;
+                                }
+                                crate::traits::MeshEvent::RelayReservationAccepted { peer_id } => {
+                                    if let Some(relay_ma) = relay_multiaddrs.get(&peer_id) {
+                                        let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
+                                        if let Err(e) = swarm.listen_on(circuit) {
+                                            tracing::warn!("Failed to listen on circuit relay={}: {}", peer_id, e);
+                                        } else {
+                                            tracing::info!("Listening on circuit via relay {}", peer_id);
+                                        }
+                                        let _ = raw_tx.send(RawEvent::RelayAccepted { relay_addr: peer_id }).await;
+                                    } else {
+                                        tracing::warn!("RelayReservationAccepted for unknown relay {}, ignoring", peer_id);
                                     }
                                 }
-                                Err(e) => tracing::warn!("Invalid circuit addr: {}", e),
+                                crate::traits::MeshEvent::RelayReservationFailed => {
+                                    let _ = raw_tx.send(RawEvent::RelayLost).await;
+                                }
+
+                                crate::traits::MeshEvent::Identify { peer_id, listen_addrs } => {
+                                    // Add all advertised addresses to Kademlia so peers are dialable
+                                    swarm.behaviour_mut().on_identify_received(peer_id, listen_addrs.clone());
+
+                                    // Dial through circuit addresses — this is how two NAT'd peers
+                                    // actually connect to each other via the relay
+                                    for addr in listen_addrs {
+                                        if addr.to_string().contains("p2p-circuit")
+                                        && !swarm.is_connected(&peer_id)
+                                        {
+                                            let _ = swarm.dial(
+                                                DialOpts::peer_id(peer_id)
+                                                    .addresses(vec![addr])
+                                                    .condition(PeerCondition::Disconnected)
+                                                    .build()
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let Some((topic, bytes, propagation_src)) = B::extract_gossip(&b_event) {
+                            let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src }).await;
+                        }
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                        circuit_reserved.remove(&peer_id);
+                        tracing::info!("Connection closed: {} cause: {:?}", peer_id, cause);
+                        let _ = raw_tx.send(RawEvent::PeerLost {
+                            peer_id
+                        }).await;
+                    }
+
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        let addr = match &endpoint {
+                            libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
+                            libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
+                        };
+
+                        let _ = raw_tx.send(RawEvent::PeerDiscovered { peer_id, addr }).await;
+
+                        if !circuit_reserved.contains(&peer_id) {
+                            let circuit_addr = relay_addrs.iter().find_map(|r| {
+                                let ma = r.parse::<libp2p::Multiaddr>().ok()?;
+                                let has_peer = ma.iter().any(|p| {
+                                    matches!(p, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
+                                });
+                                if has_peer { Some(ma) } else { None }
+                            });
+
+                            if let Some(ma) = circuit_addr {
+                                relay_multiaddrs.insert(peer_id, ma.clone());
+                                circuit_reserved.insert(peer_id);
+                                let circuit = format!("{}/p2p-circuit", ma);
+                                match circuit.parse::<libp2p::Multiaddr>() {
+                                    Ok(addr) => {
+                                        tracing::info!("Requesting circuit reservation via {}", addr);
+                                        if let Err(e) = swarm.dial(addr) {
+                                            tracing::warn!("Circuit dial failed: {}", e);
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!("Invalid circuit addr: {}", e),
+                                }
                             }
                         }
                     }
-                }
 
-                _ => {}
-            }
-        }
-
-        Some(cmd) = cmd_rx.recv() => {
-            match cmd {
-                    SwarmCommand::Publish { topic, payload, content_type} => {
-                        let msg = PendingMessage {
-                            id: Ulid::new().to_string(),
-                            topic,
-                            payload,
-                            attempts: 0,
-                            next_retry: tokio::time::Instant::now(),
-                            content_type
-                        };
-                        store.set(
-                            &format!("ghost/outbox/{}", msg.id),
-                            postcard::to_allocvec(&OutboxEntry::from(&msg)).unwrap(),
-                        );
-                        outbox.push(msg);
-                    }
-                    SwarmCommand::Subscribe { topic } => {
-                        let topic = libp2p::gossipsub::IdentTopic::new(&topic);
-                        if let Err(e) = swarm.behaviour_mut().subscribe_topic(topic) {
-                            tracing::warn!("subscribe failed: {e}");
-                        }
-                    }
-                    SwarmCommand::Shutdown => break,
                     _ => {}
                 }
             }
-        }
+
+                Some(cmd) = cmd_rx.recv() => {
+                    match cmd {
+                        SwarmCommand::Publish { topic, payload, content_type} => {
+                            let msg = PendingMessage {
+                                id: Ulid::new().to_string(),
+                                topic,
+                                payload,
+                                attempts: 0,
+                                next_retry: tokio::time::Instant::now(),
+                                content_type
+                            };
+                            store.set(
+                                &format!("ghost/outbox/{}", msg.id),
+                                postcard::to_allocvec(&OutboxEntry::from(&msg)).unwrap(),
+                            );
+                            outbox.push(msg);
+                        }
+                        SwarmCommand::Subscribe { topic } => {
+                            let topic = libp2p::gossipsub::IdentTopic::new(&topic);
+                            if let Err(e) = swarm.behaviour_mut().subscribe_topic(topic) {
+                                tracing::warn!("subscribe failed: {e}");
+                            }
+                        }
+                        SwarmCommand::Shutdown => break,
+                        _ => {}
+                    }
+                }
+            }
     }
 }
 
@@ -275,146 +310,146 @@ async fn crypto_task(
 
     loop {
         tokio::select! {
-            Some(event) = raw_rx.recv() => {
-                match event {
-                    RawEvent::GossipMessage { bytes, propagation_src, topic } => {
+        Some(event) = raw_rx.recv() => {
+            match event {
+                RawEvent::GossipMessage { bytes, propagation_src, topic } => {
 
-                        // Decode envelope
-                        let envelope = match GhostEnvelope::decode(bytes.as_ref()) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                tracing::warn!("Failed to decode envelope: {}", e);
-                                continue;
+                    // Decode envelope
+                    let envelope = match GhostEnvelope::decode(bytes.as_ref()) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            tracing::warn!("Failed to decode envelope: {}", e);
+                            continue;
+                        }
+                    };
+
+                    // Decode message
+                    let msg: GhostMessage = match postcard::from_bytes(&envelope.payload) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!("Failed to deserialize message: {}", e);
+                            continue;
+                        }
+                    };
+
+                    let peer_id_str = propagation_src.to_string();
+
+                    match msg.codec {
+
+                        codec::CONTENT_TYPE_CHUNK_STORE => {
+                            if let Ok(req) = postcard::from_bytes::<ChunkStoreRequest>(&msg.payload) {
+                                blob_manager.handle_store_request(req, &peer_id_str).await;
                             }
-                        };
-
-                        // Decode message
-                        let msg: GhostMessage = match postcard::from_bytes(&envelope.payload) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                tracing::warn!("Failed to deserialize message: {}", e);
-                                continue;
-                            }
-                        };
-
-                        let peer_id_str = propagation_src.to_string();
-
-                        match msg.codec {
-
-                            codec::CONTENT_TYPE_CHUNK_STORE => {
-                                if let Ok(req) = postcard::from_bytes::<ChunkStoreRequest>(&msg.payload) {
-                                    blob_manager.handle_store_request(req, &peer_id_str).await;
-                                }
-                                continue;
-                            }
-
-                            codec::CONTENT_TYPE_CHUNK_REQUEST => {
-                                if let Ok(req) = postcard::from_bytes::<ChunkRequest>(&msg.payload) {
-                                    blob_manager.handle_chunk_request(req, &peer_id_str).await;
-                                }
-                                continue;
-                            }
-
-                            codec::CONTENT_TYPE_CHUNK_RESPONSE => {
-                                if let Ok(resp) = postcard::from_bytes::<ChunkResponse>(&msg.payload) {
-                                    blob_manager.handle_chunk_response(resp, &peer_id_str).await;
-                                }
-                                continue;
-                            }
-
-                            codec::CONTENT_TYPE_BLOB_MANIFEST => {
-                                if let Ok(manifest) = postcard::from_bytes::<BlobManifest>(&msg.payload) {
-                                    blob_manager.handle_manifest(manifest).await;
-                                }
-                                continue;
-                            }
-
-                            _ => {}
+                            continue;
                         }
 
-                        let e = ZRPEvent::Message {
-                            conversation: topic,
-                            peer_id: propagation_src,
-                            content_type: msg.codec,
-                            payload: msg.payload.clone(),
-                        };
-
-                        let event = Arc::new(e);
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = event.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
+                        codec::CONTENT_TYPE_CHUNK_REQUEST => {
+                            if let Ok(req) = postcard::from_bytes::<ChunkRequest>(&msg.payload) {
+                                blob_manager.handle_chunk_request(req, &peer_id_str).await;
+                            }
+                            continue;
                         }
+
+                        codec::CONTENT_TYPE_CHUNK_RESPONSE => {
+                            if let Ok(resp) = postcard::from_bytes::<ChunkResponse>(&msg.payload) {
+                                blob_manager.handle_chunk_response(resp, &peer_id_str).await;
+                            }
+                            continue;
+                        }
+
+                        codec::CONTENT_TYPE_BLOB_MANIFEST => {
+                            if let Ok(manifest) = postcard::from_bytes::<BlobManifest>(&msg.payload) {
+                                blob_manager.handle_manifest(manifest).await;
+                            }
+                            continue;
+                        }
+
+                        _ => {}
                     }
 
-                    RawEvent::PeerDiscovered { peer_id, addr } => {
-                        // Notify blob manager of new peer
-                        blob_manager.on_peer_connected(peer_id.to_string()).await;
+                    let e = ZRPEvent::Message {
+                        conversation: topic,
+                        peer_id: propagation_src,
+                        content_type: msg.codec,
+                        payload: msg.payload.clone(),
+                    };
 
-                        let e = Arc::new(ZRPEvent::PeerConnected { peer_id, addr });
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = e.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
-                        }
+                    let event = Arc::new(e);
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = event.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
                     }
+                }
 
-                    RawEvent::PeerLost { peer_id } => {
-                        // Notify blob manager peer is gone
-                        blob_manager.on_peer_disconnected(&peer_id.to_string()).await;
+                RawEvent::PeerDiscovered { peer_id, addr } => {
+                    // Notify blob manager of new peer
+                    blob_manager.on_peer_connected(peer_id.to_string()).await;
 
-                        let e = Arc::new(ZRPEvent::PeerDisconnected {
-                            peer_id,
-                            reason: DisconnectReason::Clean,
-                        });
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = e.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
-                        }
+                    let e = Arc::new(ZRPEvent::PeerConnected { peer_id, addr });
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = e.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
                     }
+                }
 
-                    RawEvent::RelayAccepted { relay_addr } => {
-                        let e = Arc::new(ZRPEvent::ConnectionStatus(
-                            ConnectionStatus::Connected { relay: relay_addr }
-                        ));
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = e.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
-                        }
+                RawEvent::PeerLost { peer_id } => {
+                    // Notify blob manager peer is gone
+                    blob_manager.on_peer_disconnected(&peer_id.to_string()).await;
+
+                    let e = Arc::new(ZRPEvent::PeerDisconnected {
+                        peer_id,
+                        reason: DisconnectReason::Clean,
+                    });
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = e.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
                     }
+                }
 
-                    RawEvent::RelayLost => {
-                        let e = Arc::new(ZRPEvent::ConnectionStatus(
-                            ConnectionStatus::Disconnected
-                        ));
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = e.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
-                        }
+                RawEvent::RelayAccepted { relay_addr } => {
+                    let e = Arc::new(ZRPEvent::ConnectionStatus(
+                        ConnectionStatus::Connected { relay: relay_addr }
+                    ));
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = e.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
                     }
+                }
 
-                    RawEvent::PublishFailed { topic } => {
-                        let e = Arc::new(ZRPEvent::MessageSendFailed {
-                            conversation: topic,
-                            reason: SendFailReason::NoPeersSubscribed,
-                        });
-                        for handler in handlers.lock().await.values() {
-                            let h = handler.clone();
-                            let e = e.clone();
-                            let tx = crypto_tx.clone();
-                            tokio::spawn(async move { h.handle(&e, tx) });
-                        }
+                RawEvent::RelayLost => {
+                    let e = Arc::new(ZRPEvent::ConnectionStatus(
+                        ConnectionStatus::Disconnected
+                    ));
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = e.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
+                    }
+                }
+
+                RawEvent::PublishFailed { topic } => {
+                    let e = Arc::new(ZRPEvent::MessageSendFailed {
+                        conversation: topic,
+                        reason: SendFailReason::NoPeersSubscribed,
+                    });
+                    for handler in handlers.lock().await.values() {
+                        let h = handler.clone();
+                        let e = e.clone();
+                        let tx = crypto_tx.clone();
+                        tokio::spawn(async move { h.handle(&e, tx) });
                     }
                 }
             }
+        }
 
             Some(cmd) = crypto_rx.recv() => {
                 match cmd {

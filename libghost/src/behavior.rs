@@ -1,8 +1,6 @@
 use crate::traits::{MeshBehaviour, MeshEvent};
 use libp2p::{Multiaddr, PeerId, identify};
 use libp2p::{gossipsub, identity::PublicKey, kad, relay, swarm::NetworkBehaviour};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tracing::info;
 
@@ -33,9 +31,10 @@ impl ClientBehavior {
             .mesh_n_high(4)
             .mesh_outbound_min(1)
             .message_id_fn(|msg| {
-                let mut h = DefaultHasher::new();
-                msg.data.hash(&mut h);
-                gossipsub::MessageId::from(h.finish().to_be_bytes().to_vec())
+                use sha3::{Digest, Sha3_512};
+                let mut hasher = Sha3_512::default();
+                Digest::update(&mut hasher, &msg.data);
+                gossipsub::MessageId::from(hasher.finalize().to_vec())
             })
             .build()
             .expect("valid gossipsub config");
@@ -86,6 +85,13 @@ impl MeshBehaviour for ClientBehavior {
                 peer_id: *relay_peer_id,
             }),
 
+            ClientBehaviorEvent::Identify(identify::Event::Received { peer_id, info, .. }) => {
+                Some(MeshEvent::Identify {
+                    peer_id: *peer_id,
+                    listen_addrs: info.listen_addrs.clone(),
+                })
+            }
+
             _ => None,
         }
     }
@@ -119,5 +125,11 @@ impl MeshBehaviour for ClientBehavior {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.gossipsub.subscribe(&topic)?;
         Ok(())
+    }
+
+    fn on_identify_received(&mut self, peer_id: PeerId, listen_addrs: Vec<Multiaddr>) {
+        for addr in listen_addrs {
+            self.kademlia.add_address(&peer_id, addr);
+        }
     }
 }
