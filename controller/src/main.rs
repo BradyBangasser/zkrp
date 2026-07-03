@@ -1,11 +1,12 @@
 mod api;
 mod behavior;
 mod config;
-use crate::behavior::{MeshBehavior, MeshBehaviorEvent};
+
+use crate::behavior::{RelayBehavior, RelayBehaviorEvent};
 use crate::config::RelayConfig;
 use futures::StreamExt;
 use libghost::{identity::NodeIdentity, transport::TransportConfig};
-use libp2p::{SwarmBuilder, identify, mdns, noise, swarm::SwarmEvent, yamux};
+use libp2p::{SwarmBuilder, identify, noise, swarm::SwarmEvent, yamux};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -48,8 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )?
         .with_quic()
         .with_dns()?
-        .with_relay_client(noise::Config::new, yamux::Config::default)?
-        .with_behaviour(MeshBehavior::new)?
+        .with_behaviour(RelayBehavior::new)?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(config.idle_connection_timeout))
         .build();
 
@@ -79,43 +79,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::select! {
             event = swarm.select_next_some() => match event {
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    state.connected_peers.lock().await.push(peer_id);
-                }
-                SwarmEvent::ConnectionClosed { connection_id, peer_id, cause, .. } => {
-                    swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
-                    state.connected_peers.lock().await.retain(|p| p != &peer_id);
-                    debug!("Peer {} disconnect (cid: {}), reason: {:?}", peer_id, connection_id, cause);
-                }
-                SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns::Event::Discovered(peers))) => {
-                    for (peer_id, multiaddr) in peers {
-                        info!("mDNS Discovered: {} at {}", peer_id, multiaddr);
-                        swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
+                    let mut peers = state.connected_peers.lock().await;
+                    if !peers.contains(&peer_id) {
+                        peers.push(peer_id);
                     }
+                    info!("Peer connected: {peer_id}");
                 }
-                SwarmEvent::Behaviour(MeshBehaviorEvent::Mdns(mdns::Event::Expired(peers))) => {
-                    for (peer_id, multiaddr) in peers {
-                        info!("mDNS Expired: {} at {}", peer_id, multiaddr);
-                        swarm.behaviour_mut().kademlia.remove_address(&peer_id, &multiaddr);
+                SwarmEvent::ConnectionClosed { peer_id, num_established, cause, .. } => {
+                    if num_established == 0 {
+                        state.connected_peers.lock().await.retain(|p| p != &peer_id);
                     }
+                    debug!("Peer {peer_id} disconnected, remaining: {num_established}, cause: {cause:?}");
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Listening on {address}");
                     info!("Relay addr: {address}/p2p/{}", swarm.local_peer_id());
                 }
-                SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(
+                SwarmEvent::Behaviour(RelayBehaviorEvent::Identify(
                     identify::Event::Sent { peer_id, .. }
                 )) => {
                     info!("Sent identify to {peer_id}");
                 }
-                SwarmEvent::Behaviour(MeshBehaviorEvent::Identify(
-                    identify::Event::Received { peer_id, info, connection_id }
+                SwarmEvent::Behaviour(RelayBehaviorEvent::Identify(
+                    identify::Event::Received { peer_id, connection_id, .. }
                 )) => {
-                    info!("Identify received from {peer_id} CONN {}", connection_id);
-                    for addr in &info.listen_addrs {
-                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
-                    }
+                    info!("Identify received from {peer_id} conn={connection_id}");
                 }
-                other => debug!("Swarm Event: {:?}", other),
+                other => debug!("{other:?}"),
             }
         }
     }
