@@ -19,7 +19,7 @@ async fn get_fallback_address(req: &Request<()>) -> String {
     req.local_addr().unwrap().ip().to_string()
 }
 
-use crate::proto::{
+use crate::api::proto::{
     DeregisterRequest, HealthResponse, RegisterRequest, RelayInfo, RelayListResponse, RelayStats,
     StatsResponse, WatchStatsRequest, relay_service_server::RelayService,
 };

@@ -8,12 +8,10 @@ use hex::ToHex;
 use futures::Stream;
 use tonic::{Request, Response, Status};
 
-use crate::{
-    config::RelayConfig,
-    proto::{
-        BlobChunk, DownloadRequest, UploadChunk, UploadResponse, blob_store_server::BlobStore,
-    },
+use crate::api::proto::{
+    BlobChunk, DownloadRequest, UploadChunk, UploadResponse, blob_store_server::BlobStore,
 };
+use crate::config::RelayConfig;
 
 const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
 

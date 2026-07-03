@@ -1,5 +1,5 @@
 use crate::traits::{MeshBehaviour, MeshEvent};
-use libp2p::{Multiaddr, PeerId, identify};
+use libp2p::{Multiaddr, PeerId, autonat, dcutr, identify};
 use libp2p::{gossipsub, identity::PublicKey, kad, relay, swarm::NetworkBehaviour};
 use std::time::Duration;
 use tracing::info;
@@ -8,6 +8,8 @@ use tracing::info;
 pub struct ClientBehavior {
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub relay_client: relay::client::Behaviour,
+    pub dcutr: dcutr::Behaviour,
+    pub autonat: autonat::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
 }
@@ -29,7 +31,7 @@ impl ClientBehavior {
             .mesh_n(2)
             .mesh_n_low(1)
             .mesh_n_high(4)
-            .mesh_outbound_min(1)
+            .mesh_outbound_min(0)
             .message_id_fn(|msg| {
                 use sha3::{Digest, Sha3_512};
                 let mut hasher = Sha3_512::default();
@@ -55,6 +57,8 @@ impl ClientBehavior {
             relay_client,
             gossipsub,
             identify,
+            dcutr: dcutr::Behaviour::new(peer_id),
+            autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
         }
     }
 }

@@ -57,12 +57,45 @@ impl From<&PendingMessage> for OutboxEntry {
     }
 }
 
+async fn maybe_upload_debug_logs(
+    endpoint: &Option<String>,
+    last_upload: &mut Option<tokio::time::Instant>,
+) {
+    const MIN_INTERVAL: Duration = Duration::from_secs(30);
+    let Some(endpoint) = endpoint.clone() else {
+        return;
+    };
+    let now = tokio::time::Instant::now();
+    if let Some(prev) = *last_upload
+        && now.duration_since(prev) < MIN_INTERVAL
+    {
+        return;
+    }
+    *last_upload = Some(now);
+    let Some(buffer) = crate::debug::global_buffer() else {
+        return;
+    };
+    let data = buffer.snapshot();
+    if data.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        match crate::debug::upload(&endpoint, data).await {
+            Ok(resp) => {
+                tracing::info!("Uploaded debug log: id={}", resp.log_id,)
+            }
+            Err(e) => tracing::warn!("Debug log upload failed: {}", e),
+        }
+    });
+}
+
 async fn swarm_task<B>(
     mut swarm: libp2p::Swarm<B>,
     relay_addrs: Vec<String>,
     transport_config: crate::transport::TransportConfig,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
     raw_tx: mpsc::Sender<RawEvent>,
+    debug_log_endpoint: Option<String>,
     store: Arc<dyn GhostStore>,
 ) where
     B: crate::traits::MeshBehaviour + Send + 'static,
@@ -75,6 +108,7 @@ async fn swarm_task<B>(
         std::collections::HashSet::new();
 
     let mut relay_multiaddrs: HashMap<PeerId, Multiaddr> = HashMap::new();
+    let mut last_debug_upload: Option<tokio::time::Instant> = None;
 
     let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
     let mut outbox: Vec<PendingMessage> = store
@@ -171,28 +205,16 @@ async fn swarm_task<B>(
                                     }).await;
                                 }
                                 crate::traits::MeshEvent::RelayReservationAccepted { peer_id } => {
-                                    if let Some(relay_ma) = relay_multiaddrs.get(&peer_id) {
-                                        let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
-                                        if let Err(e) = swarm.listen_on(circuit) {
-                                            tracing::warn!("Failed to listen on circuit relay={}: {}", peer_id, e);
-                                        } else {
-                                            tracing::info!("Listening on circuit via relay {}", peer_id);
-                                        }
-                                        let _ = raw_tx.send(RawEvent::RelayAccepted { relay_addr: peer_id }).await;
-                                    } else {
-                                        tracing::warn!("RelayReservationAccepted for unknown relay {}, ignoring", peer_id);
-                                    }
+                                    tracing::info!("Relay reservation accepted by {}", peer_id);
+                                    let _ = raw_tx.send(RawEvent::RelayAccepted { relay_addr: peer_id }).await;
                                 }
                                 crate::traits::MeshEvent::RelayReservationFailed => {
                                     let _ = raw_tx.send(RawEvent::RelayLost).await;
                                 }
 
                                 crate::traits::MeshEvent::Identify { peer_id, listen_addrs } => {
-                                    // Add all advertised addresses to Kademlia so peers are dialable
                                     swarm.behaviour_mut().on_identify_received(peer_id, listen_addrs.clone());
 
-                                    // Dial through circuit addresses — this is how two NAT'd peers
-                                    // actually connect to each other via the relay
                                     for addr in listen_addrs {
                                         if addr.to_string().contains("p2p-circuit")
                                         && !swarm.is_connected(&peer_id)
@@ -222,6 +244,15 @@ async fn swarm_task<B>(
                         }).await;
                     }
 
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        tracing::warn!("Outgoing connection error (peer={:?}): {}", peer_id, error);
+                        maybe_upload_debug_logs(&debug_log_endpoint, &mut last_debug_upload).await;
+                    }
+                    SwarmEvent::IncomingConnectionError { error, .. } => {
+                        tracing::warn!("Incoming connection error: {}", error);
+                        maybe_upload_debug_logs(&debug_log_endpoint, &mut last_debug_upload).await;
+                    }
+
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         let addr = match &endpoint {
                             libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
@@ -242,15 +273,11 @@ async fn swarm_task<B>(
                             if let Some(ma) = circuit_addr {
                                 relay_multiaddrs.insert(peer_id, ma.clone());
                                 circuit_reserved.insert(peer_id);
-                                let circuit = format!("{}/p2p-circuit", ma);
-                                match circuit.parse::<libp2p::Multiaddr>() {
-                                    Ok(addr) => {
-                                        tracing::info!("Requesting circuit reservation via {}", addr);
-                                        if let Err(e) = swarm.dial(addr) {
-                                            tracing::warn!("Circuit dial failed: {}", e);
-                                        }
-                                    }
-                                    Err(e) => tracing::warn!("Invalid circuit addr: {}", e),
+                                let circuit = ma.with(multiaddr::Protocol::P2pCircuit);
+                                tracing::info!("Requesting circuit reservation via {}", circuit);
+                                if let Err(e) = swarm.listen_on(circuit) {
+                                    tracing::warn!("Circuit reservation request failed: {}", e);
+                                    circuit_reserved.remove(&peer_id);
                                 }
                             }
                         }
@@ -284,6 +311,7 @@ async fn swarm_task<B>(
                             }
                         }
                         SwarmCommand::Shutdown => break,
+
                         _ => {}
                     }
                 }
@@ -295,7 +323,7 @@ async fn load_key_bundle(store: &Arc<dyn GhostStore>) -> KeyBundle {
     KeyBundle::load_or_generate(store)
 }
 
-#[allow(unused)]
+#[allow(unused, clippy::too_many_arguments)]
 async fn crypto_task(
     mut raw_rx: mpsc::Receiver<RawEvent>,
     mut crypto_rx: mpsc::Receiver<SwarmCommand>,
@@ -528,6 +556,7 @@ pub(crate) enum RawEvent {
 pub struct ZRPHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
     blob_manager: Option<Arc<BlobManager>>,
+    debug_log_endpoint: Option<String>,
 }
 
 impl ZRPHandle {
@@ -609,18 +638,37 @@ impl ZRPHandle {
     pub fn evict_old_blobs(&self, max_age_secs: u64) {
         self.blob_manager.clone().unwrap().evict_old(max_age_secs);
     }
+
+    pub async fn upload_debug_logs(
+        &self,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let endpoint = self
+            .debug_log_endpoint
+            .as_ref()
+            .ok_or("no debug log endpoint configured")?;
+        let data = crate::debug::global_buffer()
+            .map(|b| b.snapshot())
+            .unwrap_or_default();
+        let resp = crate::debug::upload(endpoint, data).await?;
+        Ok(resp.log_id)
+    }
 }
 
 pub struct ZRPContext {
     codecs: Arc<Mutex<HashMap<u16, Codec>>>,
     handlers: Arc<Mutex<HashMap<String, Arc<dyn EventHandler>>>>,
     store: Arc<dyn GhostStore>,
+    debug_log_endpoint: Option<String>,
     blob_manager: Option<Arc<BlobManager>>,
 }
 
 impl ZRPContext {
     pub async fn register_codec(&mut self, id: u16, codec: Codec) {
         self.codecs.lock().await.insert(id, codec);
+    }
+
+    pub fn set_debug_log_endpoint(&mut self, endpoint: impl Into<String>) {
+        self.debug_log_endpoint = Some(endpoint.into());
     }
 
     pub async fn register_handler(
@@ -657,6 +705,7 @@ impl ZRPContext {
         F: FnOnce(&libp2p::identity::Keypair, libp2p::relay::client::Behaviour) -> B,
     {
         let mut relays = relay_addrs.unwrap_or_default();
+        let debug_log_endpoint = self.debug_log_endpoint.clone();
 
         if let Some(grpc) = grpc_relays {
             for grpc_addr in grpc {
@@ -682,6 +731,7 @@ impl ZRPContext {
         let store_handle = ZRPHandle {
             cmd_tx: crypto_tx.clone(),
             blob_manager: None,
+            debug_log_endpoint: debug_log_endpoint.clone(),
         };
 
         let blob_manager = Arc::new(BlobManager::new(
@@ -712,6 +762,7 @@ impl ZRPContext {
             transport_config,
             swarm_rx,
             raw_tx,
+            debug_log_endpoint.clone(),
             Arc::clone(&self.store),
         ));
 
@@ -731,6 +782,7 @@ impl ZRPContext {
         Ok(ZRPHandle {
             cmd_tx: crypto_tx,
             blob_manager: Some(blob_manager),
+            debug_log_endpoint,
         })
     }
 
@@ -742,6 +794,7 @@ impl ZRPContext {
             handlers: Arc::new(Mutex::new(HashMap::new())),
             store,
             blob_manager: None,
+            debug_log_endpoint: None,
         }
     }
 }
@@ -757,6 +810,7 @@ impl Default for ZRPContext {
             handlers: Arc::new(Mutex::new(HashMap::new())),
             store: Arc::new(crate::store::MemoryStore::new()),
             blob_manager: None,
+            debug_log_endpoint: None,
         }
     }
 }

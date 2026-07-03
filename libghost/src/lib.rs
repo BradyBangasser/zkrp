@@ -2,6 +2,7 @@ pub mod behavior;
 pub mod blob;
 pub mod codec;
 pub mod context;
+pub mod debug;
 pub mod handler;
 pub mod identity;
 pub mod keybundle;

@@ -38,9 +38,7 @@ static INIT_LOGGING: Once = Once::new();
 
 fn init_logging() {
     INIT_LOGGING.call_once(|| {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
+        libghost::debug::init_tracing(tracing::Level::INFO, 256 * 1024);
     });
 }
 
@@ -1393,6 +1391,11 @@ impl MeshNode {
             .spawn(async move {
                 let mut ctx = ZRPContext::with_store(Arc::clone(&store));
                 ctx.register_handler("swift", bridge).await;
+
+                if let Ok(_) = std::env::var("ZRP_DEBUG_LOG_ENDPOINT") {
+                    ctx.set_debug_log_endpoint("relay.a.central.eu.infra.zkrp.net");
+                }
+
                 ctx.start(
                     core_identity,
                     Some(vec![relay_addr]),

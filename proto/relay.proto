@@ -85,3 +85,11 @@ service BlobStore {
   rpc UploadBlob(stream UploadChunk) returns (UploadResponse);
   rpc DownloadBlob(DownloadRequest) returns (stream BlobChunk);
 }
+
+message LogUploadResponse {
+  string log_id = 1;
+}
+
+service Logging {
+  rpc UploadDebugLog(stream UploadChunk) returns (LogUploadResponse);
+}

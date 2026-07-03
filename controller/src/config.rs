@@ -30,6 +30,7 @@ pub async fn load_config() -> RelayConfig {
     RelayConfig {
         region: std::env::var("AWS_REGION").expect("AWS_REGION not set"),
         blob_bucket: std::env::var("BLOB_BUCKET").expect("BLOB_BUCKET not set"),
+        log_bucket: std::env::var("LOG_BUCKET").expect("LOG_BUCKET not set"),
         cf_domain: std::env::var("CF_DOMAIN").expect("CF_DOMAIN not set"),
     }
 }
@@ -38,5 +39,6 @@ pub async fn load_config() -> RelayConfig {
 pub struct RelayConfig {
     pub region: String,
     pub blob_bucket: String,
+    pub log_bucket: String,
     pub cf_domain: String,
 }
