@@ -1,0 +1,24 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+tonic = "0.14"
+prost = "0.14"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["time"] }
+libghost = { path = "../libghost" }
+tonic-prost = "0.14.6"
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.137.0"
+ring = "0.17"
+hex = "0.4.3"
+dotenv = "0.15.0"
+chrono = "0.4.45"
+
+[build-dependencies]
+tonic-prost-build = "0.14"

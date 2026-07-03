@@ -22,6 +22,7 @@ ExecStart=podman run \
     --env CREDENTIALS_DIRECTORY=/run/credentials \
     --env AWS_REGION=us-east-2 \
     --env BLOB_BUCKET=fratrat \
+    --env LOG_BUCKET=fratrat-logs \
     --env CF_DOMAIN=blobfront.infra.zkrp.net \
     --env-file /etc/system.env \
     localhost/zkrp-relay:latest

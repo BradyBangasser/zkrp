@@ -1,3 +1,3 @@
 [workspace]
-members = ["libghost", "controller", "ios", "cli"]
+members = ["libghost", "controller", "ios", "cli", "auth"]
 resolver = "2"

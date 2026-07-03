@@ -1,0 +1,22 @@
+syntax = "proto3";
+package zrp.auth.v1;
+
+service AuthService {
+  rpc ExchangeAttestation (stream AuthMessage) returns (stream AuthMessage);
+}
+
+message AuthMessage {
+  oneof payload {
+    bytes challenge_nonce = 1;
+    
+    AttestationProof proof = 2;
+    
+    bytes bbs_plus_signature = 3;
+  }
+}
+
+message AttestationProof {
+    bytes attestation_object = 1;
+    string key_id = 2;
+    bytes zkp_public_key = 3;
+}
