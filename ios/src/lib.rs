@@ -1807,6 +1807,17 @@ async fn upload_blob(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshErr
     Ok(response.into_inner().blob_url)
 }
 
+#[uniffi::export]
+pub async fn upload_debug_log(grpc_addr: String, data: Vec<u8>) -> Result<String, MeshError> {
+    tokio::task::spawn(async move {
+        libghost::relay::RelayClient::upload_debug_log(&grpc_addr, data)
+            .await
+            .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
+    })
+    .await
+    .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
+}
+
 #[derive(uniffi::Record)]
 pub struct RelayInfo {
     pub multiaddr: String,

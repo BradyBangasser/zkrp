@@ -44,6 +44,7 @@ hex = "0.4.3"
 hmac = "0.13.0"
 chacha20poly1305 = "0.10"
 sha2 = "0.11"
+tokio-stream = { version = "0.1", features = ["time"] }
 
 [build-dependencies]
 prost-build = "0.14"
