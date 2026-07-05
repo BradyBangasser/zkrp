@@ -96,6 +96,17 @@ impl MeshBehaviour for ClientBehavior {
                 })
             }
 
+            ClientBehaviorEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                result: kad::QueryResult::GetClosestPeers(Ok(ok)),
+                ..
+            }) => {
+                let first = ok.peers.clone().into_iter().next()?;
+                Some(MeshEvent::PeerDiscovered {
+                    peer_id: first.peer_id,
+                    addr: first.addrs.into_iter().next()?,
+                })
+            }
+
             _ => None,
         }
     }
@@ -129,6 +140,10 @@ impl MeshBehaviour for ClientBehavior {
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.gossipsub.subscribe(&topic)?;
         Ok(())
+    }
+
+    fn kademlia_get_closest(&mut self, key: PeerId) {
+        self.kademlia.get_closest_peers(key);
     }
 
     fn on_identify_received(&mut self, peer_id: PeerId, listen_addrs: Vec<Multiaddr>) {

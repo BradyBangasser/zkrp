@@ -107,6 +107,10 @@ async fn swarm_task<B>(
     let mut circuit_reserved: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
 
+    let mut discover_interval = tokio::time::interval(Duration::from_secs(15));
+    discover_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut has_reservation = false;
+
     let mut relay_multiaddrs: HashMap<PeerId, Multiaddr> = HashMap::new();
     let mut last_debug_upload: Option<tokio::time::Instant> = None;
 
@@ -313,6 +317,12 @@ async fn swarm_task<B>(
                         SwarmCommand::Shutdown => break,
 
                         _ => {}
+                    }
+                }
+                _ = discover_interval.tick() => {
+                    if has_reservation {
+                        let random_key = libp2p::PeerId::random();
+                        swarm.behaviour_mut().kademlia_get_closest(random_key);
                     }
                 }
             }

@@ -41,4 +41,5 @@ pub trait MeshBehaviour: NetworkBehaviour {
         topic: gossipsub::IdentTopic,
     ) -> Result<(), Box<dyn std::error::Error>>;
     fn on_identify_received(&mut self, _peer_id: PeerId, _listen_addrs: Vec<Multiaddr>) {}
+    fn kademlia_get_closest(&mut self, _key: PeerId) {}
 }

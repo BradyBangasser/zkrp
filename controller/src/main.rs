@@ -40,6 +40,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Relay PeerID: {}", identity.peer_id_string());
 
+    // NOTE: no `.with_relay_client(...)` in the chain now — the relay is never
+    // itself relayed, so `with_behaviour` takes a single-arg closure.
     let mut swarm = SwarmBuilder::with_existing_identity(identity.keypair)
         .with_tokio()
         .with_tcp(
@@ -49,7 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )?
         .with_quic()
         .with_dns()?
-        .with_behaviour(RelayBehavior::new)?
+        .with_behaviour(|key| RelayBehavior::new(key))?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(config.idle_connection_timeout))
         .build();
 
@@ -85,26 +87,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     info!("Peer connected: {peer_id}");
                 }
+
                 SwarmEvent::ConnectionClosed { peer_id, num_established, cause, .. } => {
                     if num_established == 0 {
+                        swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
                         state.connected_peers.lock().await.retain(|p| p != &peer_id);
                     }
-                    debug!("Peer {peer_id} disconnected, remaining: {num_established}, cause: {cause:?}");
+                    debug!("Peer {peer_id} conn closed, remaining={num_established}, cause={cause:?}");
                 }
+
                 SwarmEvent::NewListenAddr { address, .. } => {
                     info!("Listening on {address}");
                     info!("Relay addr: {address}/p2p/{}", swarm.local_peer_id());
                 }
+
+                SwarmEvent::Behaviour(RelayBehaviorEvent::Identify(
+                    identify::Event::Received { peer_id, info, connection_id }
+                )) => {
+                    info!("Identify received from {peer_id} conn={connection_id}");
+                    for addr in &info.listen_addrs {
+                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                    }
+                }
+
                 SwarmEvent::Behaviour(RelayBehaviorEvent::Identify(
                     identify::Event::Sent { peer_id, .. }
                 )) => {
-                    info!("Sent identify to {peer_id}");
+                    debug!("Sent identify to {peer_id}");
                 }
-                SwarmEvent::Behaviour(RelayBehaviorEvent::Identify(
-                    identify::Event::Received { peer_id, connection_id, .. }
-                )) => {
-                    info!("Identify received from {peer_id} conn={connection_id}");
-                }
+
                 other => debug!("{other:?}"),
             }
         }
