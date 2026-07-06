@@ -68,10 +68,10 @@ impl Logging for LogService {
         sr.fill(&mut id_buffer).unwrap();
         let blob_id = id_buffer.encode_hex::<String>();
         let blob = format!("log/{}/{}", &blob_id[0..3], &blob_id[3..]);
-        tracing::info!("Inserting blob {}", blob);
+        tracing::info!("Inserting log {}", blob);
         self.client
             .put_object()
-            .bucket(&self.config.blob_bucket)
+            .bucket(&self.config.log_bucket)
             .key(&blob)
             .body(data.into())
             .content_type("text/plain")
