@@ -3,6 +3,7 @@ use libghost::blob::BlobError;
 use libghost::context::{SwarmCommand, ZRPContext, ZRPHandle};
 use libghost::handler::{ConnectionStatus, EventHandler, ZRPEvent};
 use libghost::identity::NodeIdentity as CoreIdentity;
+use libghost::relay::RelayClient;
 use libghost::store::{GhostStore, SqliteStore};
 use libghost::transport::TransportConfig as CoreConfig;
 use std::sync::Once;
@@ -43,8 +44,12 @@ fn init_logging() {
 }
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
-    TOKIO_RUNTIME
-        .get_or_init(|| tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"))
+    TOKIO_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    })
 }
 
 fn documents_dir() -> String {
@@ -77,8 +82,6 @@ fn now_unix() -> u64 {
 }
 
 uniffi::setup_scaffolding!();
-
-// MARK: - Error
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MeshError {
@@ -547,12 +550,6 @@ pub fn delete_conversation(conversation_id: String) {
     }
 }
 
-/// Wipe all app data from SQLite except the identity keypair.
-/// Used from Settings → "Clear cache". Does NOT clear:
-///   - ghost/identity/keypair  (would change our peer ID)
-///   - ghost/identity/peer_id
-/// Clears everything else: profiles, parties, alerts, messages,
-/// relationships, pending likes/invites, peer last-seen timestamps.
 #[uniffi::export]
 pub fn clear_all_caches() {
     let store = store();
@@ -1808,14 +1805,15 @@ async fn upload_blob(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshErr
 }
 
 #[uniffi::export]
-pub async fn upload_debug_log(grpc_addr: String, data: Vec<u8>) -> Result<String, MeshError> {
-    tokio::task::spawn(async move {
-        libghost::relay::RelayClient::upload_debug_log(&grpc_addr, data)
-            .await
-            .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
-    })
-    .await
-    .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
+pub async fn upload_debug_log(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshError> {
+    crate::get_runtime()
+        .spawn(async move {
+            RelayClient::upload_debug_log(&grpc_addr, data)
+                .await
+                .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })
+        })
+        .await
+        .map_err(|e| MeshError::ConnectionError { msg: e.to_string() })?
 }
 
 #[derive(uniffi::Record)]
