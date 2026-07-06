@@ -52,10 +52,19 @@ impl Logging for LogService {
         let mut stream = request.into_inner();
         let mut data: Vec<u8> = Vec::new();
 
-        while let Some(chunk) = stream.message().await.unwrap() {
-            data.extend_from_slice(&chunk.data);
-            if data.len() > MAX_LOG_BYTES {
-                return Err(Status::resource_exhausted("blob exceeds 10 MB limit"));
+        loop {
+            match stream.message().await {
+                Ok(Some(chunk)) => {
+                    data.extend_from_slice(&chunk.data);
+                    if data.len() > MAX_LOG_BYTES {
+                        return Err(Status::resource_exhausted("blob exceeds 10 MB limit"));
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("log upload stream aborted: {e}");
+                    return Err(Status::aborted("upload stream interrupted"));
+                }
             }
         }
 

@@ -112,6 +112,31 @@ async fn swarm_task<B>(
     let mut has_reservation = false;
 
     let mut relay_multiaddrs: HashMap<PeerId, Multiaddr> = HashMap::new();
+    // Relay peers we're connected to but haven't yet successfully reserved a
+    // circuit on. Retried on the discovery tick — important on CGNAT/cellular
+    // where the first listen_on(circuit) can fail on a not-yet-ready link.
+    let mut pending_circuit: std::collections::HashSet<libp2p::PeerId> =
+        std::collections::HashSet::new();
+
+    // --- Roaming / silent auto-heal state ---------------------------------
+    // The set of peer ids that are RELAYS (parsed from relay_addrs). Lets us
+    // distinguish "lost my relay" from "a mesh peer left" on ConnectionClosed.
+    let relay_peer_ids: std::collections::HashSet<PeerId> = relay_addrs
+        .iter()
+        .filter_map(|r| r.parse::<libp2p::Multiaddr>().ok())
+        .filter_map(|ma| {
+            ma.iter().find_map(|p| match p {
+                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                _ => None,
+            })
+        })
+        .collect();
+    // Relays we've lost and need to re-dial (network roam, drop, etc). Drained
+    // by the reconnect tick with backoff.
+    let mut relays_to_redial: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
+    let mut reconnect_backoff = tokio::time::interval(Duration::from_secs(3));
+    reconnect_backoff.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let mut last_debug_upload: Option<tokio::time::Instant> = None;
 
     let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
@@ -142,8 +167,14 @@ async fn swarm_task<B>(
         .unwrap();
 
     for relay in &relay_addrs {
-        let addr: libp2p::Multiaddr = relay.parse().unwrap();
-        let _ = swarm.dial(addr);
+        match relay.parse::<libp2p::Multiaddr>() {
+            Ok(addr) => {
+                let _ = swarm.dial(addr);
+            }
+            Err(e) => {
+                tracing::warn!("skipping unparseable relay addr {relay:?}: {e}");
+            }
+        }
     }
 
     loop {
@@ -210,6 +241,30 @@ async fn swarm_task<B>(
                                 }
                                 crate::traits::MeshEvent::RelayReservationAccepted { peer_id } => {
                                     tracing::info!("Relay reservation accepted by {}", peer_id);
+                                    has_reservation = true;
+
+                                    // Ensure we're listening on the circuit for this relay.
+                                    // The initial listen_on happens in ConnectionEstablished,
+                                    // but on high-latency/CGNAT links that can fail; re-affirm
+                                    // it here now that the relay has confirmed the reservation.
+                                    if let Some(relay_ma) = relay_multiaddrs.get(&peer_id) {
+                                        let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
+                                        if !circuit_reserved.contains(&peer_id) {
+                                            match swarm.listen_on(circuit.clone()) {
+                                                Ok(_) => {
+                                                    circuit_reserved.insert(peer_id);
+                                                    tracing::info!("Now listening on circuit {}", circuit);
+                                                }
+                                                Err(e) => tracing::warn!("Circuit listen (on accept) failed: {}", e),
+                                            }
+                                        }
+                                    }
+
+                                    // Immediately kick a discovery walk so we find existing
+                                    // peers without waiting for the next 15s tick.
+                                    let key = libp2p::PeerId::random();
+                                    swarm.behaviour_mut().kademlia_get_closest(key);
+
                                     let _ = raw_tx.send(RawEvent::RelayAccepted { relay_addr: peer_id }).await;
                                 }
                                 crate::traits::MeshEvent::RelayReservationFailed => {
@@ -242,10 +297,29 @@ async fn swarm_task<B>(
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                         circuit_reserved.remove(&peer_id);
+                        pending_circuit.remove(&peer_id);
                         tracing::info!("Connection closed: {} cause: {:?}", peer_id, cause);
-                        let _ = raw_tx.send(RawEvent::PeerLost {
-                            peer_id
-                        }).await;
+
+                        if relay_peer_ids.contains(&peer_id) {
+                            // We lost a RELAY (roam, network change, drop). Queue
+                            // it for silent re-dial and drop our reservation flag
+                            // if we have no other relay left.
+                            tracing::warn!("Lost relay {}, will re-dial", peer_id);
+                            relays_to_redial.insert(peer_id);
+                            relay_multiaddrs.remove(&peer_id);
+                            // If that was our only relay, we no longer hold a
+                            // reservation; discovery pauses until we re-reserve.
+                            let still_on_a_relay = circuit_reserved
+                                .iter()
+                                .any(|p| relay_peer_ids.contains(p));
+                            if !still_on_a_relay {
+                                has_reservation = false;
+                                let _ = raw_tx.send(RawEvent::RelayLost).await;
+                            }
+                        } else {
+                            // A regular mesh peer left.
+                            let _ = raw_tx.send(RawEvent::PeerLost { peer_id }).await;
+                        }
                     }
 
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -262,6 +336,9 @@ async fn swarm_task<B>(
                             libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
                             libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
                         };
+
+                        // If this was a relay we'd lost, stop trying to re-dial it.
+                        relays_to_redial.remove(&peer_id);
 
                         let _ = raw_tx.send(RawEvent::PeerDiscovered { peer_id, addr }).await;
 
@@ -280,8 +357,32 @@ async fn swarm_task<B>(
                                 let circuit = ma.with(multiaddr::Protocol::P2pCircuit);
                                 tracing::info!("Requesting circuit reservation via {}", circuit);
                                 if let Err(e) = swarm.listen_on(circuit) {
-                                    tracing::warn!("Circuit reservation request failed: {}", e);
+                                    tracing::warn!("Circuit reservation request failed: {} (will retry)", e);
                                     circuit_reserved.remove(&peer_id);
+                                    // Remember it so the discovery tick retries — critical on
+                                    // cellular where the first attempt often loses the race.
+                                    pending_circuit.insert(peer_id);
+                                }
+                            }
+                        }
+                    }
+
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        // A new local listen address appeared — usually means a
+                        // network interface came up (e.g. roamed onto a new WiFi
+                        // or cellular). Proactively re-dial any relay we've lost
+                        // rather than waiting for the dead connection to time out.
+                        tracing::info!("New listen addr {} — checking relay health", address);
+                        if !relay_peer_ids.is_empty() {
+                            let connected_to_relay = relay_peer_ids
+                                .iter()
+                                .any(|p| swarm.is_connected(p));
+                            if !connected_to_relay {
+                                for r in &relay_addrs {
+                                    if let Ok(ma) = r.parse::<libp2p::Multiaddr>() {
+                                        tracing::info!("Roam re-dial of relay {}", ma);
+                                        let _ = swarm.dial(ma);
+                                    }
                                 }
                             }
                         }
@@ -319,7 +420,56 @@ async fn swarm_task<B>(
                         _ => {}
                     }
                 }
+                _ = reconnect_backoff.tick() => {
+                    // Silent auto-heal: re-dial any relay we've lost. On success
+                    // ConnectionEstablished re-runs the reservation flow, which
+                    // re-establishes the circuit and resumes discovery — the app
+                    // never sees more than a brief gap (messages queue in outbox).
+                    if !relays_to_redial.is_empty() {
+                        let targets: Vec<PeerId> = relays_to_redial.iter().copied().collect();
+                        for relay_peer in targets {
+                            // If we've reconnected in the meantime, clear it.
+                            if swarm.is_connected(&relay_peer) {
+                                relays_to_redial.remove(&relay_peer);
+                                continue;
+                            }
+                            // Find this relay's full multiaddr from the configured list.
+                            if let Some(ma) = relay_addrs.iter().find_map(|r| {
+                                let ma = r.parse::<libp2p::Multiaddr>().ok()?;
+                                let matches = ma.iter().any(|p| {
+                                    matches!(p, libp2p::multiaddr::Protocol::P2p(id) if id == relay_peer)
+                                });
+                                if matches { Some(ma) } else { None }
+                            }) {
+                                tracing::info!("Auto-heal: re-dialing relay {}", ma);
+                                let _ = swarm.dial(ma);
+                            } else {
+                                relays_to_redial.remove(&relay_peer);
+                            }
+                        }
+                    }
+                }
                 _ = discover_interval.tick() => {
+                    // Retry any relay circuit reservations that failed initially.
+                    // On cellular/CGNAT the first listen_on often loses a race with
+                    // connection setup; this recovers those devices.
+                    let retry: Vec<PeerId> = pending_circuit.iter().copied().collect();
+                    for relay_peer in retry {
+                        if let Some(relay_ma) = relay_multiaddrs.get(&relay_peer) {
+                            let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
+                            match swarm.listen_on(circuit.clone()) {
+                                Ok(_) => {
+                                    tracing::info!("Circuit reservation retry succeeded: {}", circuit);
+                                    circuit_reserved.insert(relay_peer);
+                                    pending_circuit.remove(&relay_peer);
+                                }
+                                Err(e) => tracing::warn!("Circuit retry still failing: {}", e),
+                            }
+                        } else {
+                            pending_circuit.remove(&relay_peer);
+                        }
+                    }
+
                     if has_reservation {
                         let random_key = libp2p::PeerId::random();
                         swarm.behaviour_mut().kademlia_get_closest(random_key);
