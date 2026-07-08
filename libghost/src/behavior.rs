@@ -47,10 +47,20 @@ impl ClientBehavior {
         )
         .expect("valid gossipsub behaviour");
 
-        let identify = identify::Behaviour::new(identify::Config::new(
-            "/nocap/1.0.0".to_string(),
-            public_key.clone(),
-        ));
+        let identify = identify::Behaviour::new(
+            identify::Config::new("/nocap/1.0.0".to_string(), public_key.clone())
+                // Push updated address lists to already-connected peers. Without
+                // this, identify only exchanges addresses once at connection time
+                // — before the relay reservation completes — so the circuit
+                // address added later via add_external_address never reaches
+                // peers, and they can only ever dial our (unreachable) direct
+                // addresses. Push propagates the circuit address when it appears.
+                .with_push_listen_addr_updates(true)
+                // Enable the address cache so a peer's pushed addresses (incl.
+                // their circuit address) are retained and usable for re-dialing.
+                // Default is 0 (disabled), which would drop them.
+                .with_cache_size(100),
+        );
 
         Self {
             kademlia,
