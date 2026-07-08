@@ -39,7 +39,7 @@ static INIT_LOGGING: Once = Once::new();
 
 fn init_logging() {
     INIT_LOGGING.call_once(|| {
-        libghost::debug::init_tracing(tracing::Level::INFO, 256 * 1024);
+        libghost::debug::init_tracing(tracing::Level::DEBUG, 256 * 1024);
     });
 }
 

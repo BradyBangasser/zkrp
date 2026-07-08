@@ -158,6 +158,14 @@ impl MeshBehaviour for ClientBehavior {
 
     fn on_identify_received(&mut self, peer_id: PeerId, listen_addrs: Vec<Multiaddr>) {
         for addr in listen_addrs {
+            // Peers bound to 0.0.0.0 advertise loopback, LAN, link-local, CGNAT
+            // and iOS virtual interfaces. Dialing those can only work on a
+            // shared LAN, and they crowd out the circuit address that works
+            // everywhere. See `crate::addr`.
+            if !crate::addr::is_dialable(&addr) {
+                tracing::trace!("skipping unreachable addr {addr} for {peer_id}");
+                continue;
+            }
             self.kademlia.add_address(&peer_id, addr);
         }
     }

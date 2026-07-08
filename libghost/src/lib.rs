@@ -1,3 +1,4 @@
+pub mod addr;
 pub mod behavior;
 pub mod blob;
 pub mod codec;

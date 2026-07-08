@@ -10,6 +10,7 @@ use crate::{
 use libp2p::dns::{ResolverConfig, ResolverOpts};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::{Multiaddr, PeerId, multiaddr};
+use libp2p_core;
 use prost::Message;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -120,6 +121,14 @@ async fn swarm_task<B>(
     // where the first listen_on(circuit) can fail on a not-yet-ready link.
     let mut pending_circuit: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
+
+    // `listen_on(circuit)` returns Ok immediately — the reservation itself
+    // succeeds or fails ASYNCHRONOUSLY, surfacing as ListenerClosed/
+    // ListenerError, never as a relay::client::Event. Without this map we can't
+    // tell which relay a dead listener belonged to, so a failed reservation
+    // leaves the peer wedged in `circuit_reserved` forever with nothing
+    // retrying it.
+    let mut circuit_listeners: HashMap<libp2p_core::transport::ListenerId, PeerId> = HashMap::new();
 
     // --- Roaming / silent auto-heal state ---------------------------------
     // The set of peer ids that are RELAYS (parsed from relay_addrs). Lets us
@@ -260,7 +269,8 @@ async fn swarm_task<B>(
                                         let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
                                         if !circuit_reserved.contains(&peer_id) {
                                             match swarm.listen_on(circuit.clone()) {
-                                                Ok(_) => {
+                                                Ok(id) => {
+                                                    circuit_listeners.insert(id, peer_id);
                                                     circuit_reserved.insert(peer_id);
                                                     tracing::info!("Now listening on circuit {}", circuit);
                                                 }
@@ -379,12 +389,17 @@ async fn swarm_task<B>(
                                 circuit_reserved.insert(peer_id);
                                 let circuit = ma.with(multiaddr::Protocol::P2pCircuit);
                                 tracing::info!("Requesting circuit reservation via {}", circuit);
-                                if let Err(e) = swarm.listen_on(circuit) {
-                                    tracing::warn!("Circuit reservation request failed: {} (will retry)", e);
-                                    circuit_reserved.remove(&peer_id);
-                                    // Remember it so the discovery tick retries — critical on
-                                    // cellular where the first attempt often loses the race.
-                                    pending_circuit.insert(peer_id);
+                                match swarm.listen_on(circuit) {
+                                    Ok(id) => {
+                                        circuit_listeners.insert(id, peer_id);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Circuit reservation request failed: {} (will retry)", e);
+                                        circuit_reserved.remove(&peer_id);
+                                        // Remember it so the discovery tick retries — critical on
+                                        // cellular where the first attempt often loses the race.
+                                        pending_circuit.insert(peer_id);
+                                    }
                                 }
                             }
                         }
@@ -418,6 +433,54 @@ async fn swarm_task<B>(
                                         let _ = swarm.dial(ma);
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // A circuit listener dying IS a failed/expired reservation.
+                    // libp2p reports it here, not as a relay::client::Event —
+                    // relay::client::Event has no failure variant at all. Until
+                    // these arms existed the reason was silently discarded and
+                    // the relay stayed stuck in `circuit_reserved`, so nothing
+                    // ever retried it.
+                    SwarmEvent::ListenerClosed { listener_id, reason, .. } => {
+                        if let Some(relay_peer) = circuit_listeners.remove(&listener_id) {
+                            tracing::warn!(
+                                "Circuit listener for relay {} closed — reservation failed: {:?}",
+                                relay_peer, reason
+                            );
+                            circuit_reserved.remove(&relay_peer);
+                            if swarm.is_connected(&relay_peer) {
+                                pending_circuit.insert(relay_peer);
+                            }
+                            if circuit_reserved.is_empty() {
+                                has_reservation = false;
+                                let _ = raw_tx.send(RawEvent::RelayLost).await;
+                            }
+                        } else {
+                            tracing::debug!("Listener {:?} closed: {:?}", listener_id, reason);
+                        }
+                    }
+
+                    SwarmEvent::ListenerError { listener_id, error } => {
+                        if let Some(relay_peer) = circuit_listeners.get(&listener_id) {
+                            tracing::warn!(
+                                "Circuit listener error for relay {}: {}",
+                                relay_peer, error
+                            );
+                        } else {
+                            tracing::debug!("Listener {:?} error: {}", listener_id, error);
+                        }
+                    }
+
+                    // Reservation was granted and has now lapsed (relay default
+                    // is a 1h reservation_duration). Re-arm rather than sit dark.
+                    SwarmEvent::ExpiredListenAddr { listener_id, address } => {
+                        if let Some(relay_peer) = circuit_listeners.remove(&listener_id) {
+                            tracing::warn!("Circuit address expired ({}), re-requesting", address);
+                            circuit_reserved.remove(&relay_peer);
+                            if swarm.is_connected(&relay_peer) {
+                                pending_circuit.insert(relay_peer);
                             }
                         }
                     }
@@ -492,8 +555,9 @@ async fn swarm_task<B>(
                         if let Some(relay_ma) = relay_multiaddrs.get(&relay_peer) {
                             let circuit = relay_ma.clone().with(multiaddr::Protocol::P2pCircuit);
                             match swarm.listen_on(circuit.clone()) {
-                                Ok(_) => {
-                                    tracing::info!("Circuit reservation retry succeeded: {}", circuit);
+                                Ok(id) => {
+                                    tracing::info!("Circuit reservation retry issued: {}", circuit);
+                                    circuit_listeners.insert(id, relay_peer);
                                     circuit_reserved.insert(relay_peer);
                                     pending_circuit.remove(&relay_peer);
                                 }
