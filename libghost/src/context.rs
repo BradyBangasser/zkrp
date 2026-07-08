@@ -136,6 +136,11 @@ async fn swarm_task<B>(
     let mut relays_to_redial: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
     let mut reconnect_backoff = tokio::time::interval(Duration::from_secs(3));
     reconnect_backoff.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Roam handling: only re-dial on network change once we've successfully
+    // reserved at least once (avoids racing the initial startup dial), and
+    // debounce the burst of NewListenAddr events an interface change produces.
+    let mut ever_reserved = false;
+    let mut last_roam_redial = tokio::time::Instant::now() - Duration::from_secs(10);
 
     let mut last_debug_upload: Option<tokio::time::Instant> = None;
 
@@ -242,6 +247,7 @@ async fn swarm_task<B>(
                                 crate::traits::MeshEvent::RelayReservationAccepted { peer_id } => {
                                     tracing::info!("Relay reservation accepted by {}", peer_id);
                                     has_reservation = true;
+                                    ever_reserved = true;
 
                                     // Ensure we're listening on the circuit for this relay.
                                     // The initial listen_on happens in ConnectionEstablished,
@@ -369,18 +375,29 @@ async fn swarm_task<B>(
 
                     SwarmEvent::NewListenAddr { address, .. } => {
                         // A new local listen address appeared — usually means a
-                        // network interface came up (e.g. roamed onto a new WiFi
-                        // or cellular). Proactively re-dial any relay we've lost
-                        // rather than waiting for the dead connection to time out.
-                        tracing::info!("New listen addr {} — checking relay health", address);
-                        if !relay_peer_ids.is_empty() {
+                        // network interface came up (roamed onto new WiFi/cellular).
+                        // Proactively re-dial a lost relay rather than waiting for
+                        // the dead connection to time out.
+                        //
+                        // Guards:
+                        //  - At startup libp2p emits one NewListenAddr per
+                        //    interface/protocol (loopback+LAN × TCP+QUIC = 4), while
+                        //    the initial relay dial is already in flight. Re-dialing
+                        //    then just collides (Address already in use). So we only
+                        //    treat this as a roam AFTER we've had a reservation at
+                        //    least once (ever_reserved), and we debounce bursts.
+                        tracing::debug!("New listen addr {}", address);
+                        let now = tokio::time::Instant::now();
+                        let debounced = now.duration_since(last_roam_redial) < Duration::from_secs(2);
+                        if ever_reserved && !debounced {
                             let connected_to_relay = relay_peer_ids
                                 .iter()
                                 .any(|p| swarm.is_connected(p));
                             if !connected_to_relay {
+                                last_roam_redial = now;
+                                tracing::info!("Network changed, no relay connected — re-dialing");
                                 for r in &relay_addrs {
                                     if let Ok(ma) = r.parse::<libp2p::Multiaddr>() {
-                                        tracing::info!("Roam re-dial of relay {}", ma);
                                         let _ = swarm.dial(ma);
                                     }
                                 }
