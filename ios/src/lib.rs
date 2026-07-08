@@ -1806,6 +1806,7 @@ async fn upload_blob(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshErr
 
 #[uniffi::export]
 pub async fn upload_debug_log(data: Vec<u8>, grpc_addr: String) -> Result<String, MeshError> {
+    tracing::error!("UPLOAD TO {}", grpc_addr);
     crate::get_runtime()
         .spawn(async move {
             RelayClient::upload_debug_log(&grpc_addr, data)
