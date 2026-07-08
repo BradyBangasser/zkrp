@@ -107,6 +107,9 @@ async fn swarm_task<B>(
     let mut circuit_reserved: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
 
+    // Our own peer id — needed to build our advertised circuit address.
+    let local_peer_id = *swarm.local_peer_id();
+
     let mut discover_interval = tokio::time::interval(Duration::from_secs(15));
     discover_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut has_reservation = false;
@@ -264,6 +267,20 @@ async fn swarm_task<B>(
                                                 Err(e) => tracing::warn!("Circuit listen (on accept) failed: {}", e),
                                             }
                                         }
+
+                                        // CRITICAL: listen_on(circuit) only makes us ACCEPT inbound
+                                        // circuit connections — it does NOT make identify advertise
+                                        // the circuit address to other peers. We must explicitly
+                                        // register the full circuit address (with our own peer id)
+                                        // as an external address, or peers only ever learn our
+                                        // direct (NAT'd, unreachable) addresses and can never dial
+                                        // us through the relay. This is what makes two NAT'd/cellular
+                                        // devices reachable to each other.
+                                        let my_circuit = circuit
+                                            .clone()
+                                            .with(multiaddr::Protocol::P2p(local_peer_id));
+                                        swarm.add_external_address(my_circuit.clone());
+                                        tracing::info!("Advertising circuit external addr {}", my_circuit);
                                     }
 
                                     // Immediately kick a discovery walk so we find existing
