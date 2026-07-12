@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
+  <title>Verify your FratRat account</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <style>
+    /* Progressive enhancement only. Every element is also styled inline, so a
+       client that strips this block still renders correctly. */
+    body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    img { -ms-interpolation-mode:bicubic; border:0; outline:none; text-decoration:none; }
+    a { text-decoration:none; }
+    .hover-btn:hover { background:#f9447c !important; }
+    @media only screen and (max-width:620px) {
+      .container { width:100% !important; }
+      .px { padding-left:22px !important; padding-right:22px !important; }
+      .h1 { font-size:26px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background:#140d1e; color:#f3eef7; font-family:'Trebuchet MS', 'Segoe UI', Helvetica, Arial, sans-serif;">
+
+  <!-- Preheader: preview text, hidden in the body. -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
+    Your FratRat verification link — expires in {{EXPIRES_MINUTES}} minutes.&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#140d1e;">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+
+        <!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+        <table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background:#1c1329; border:1px solid rgba(255,255,255,0.09); border-radius:18px; overflow:hidden;">
+
+          <!-- Logo -->
+          <tr>
+            <td align="center" class="px" style="padding:40px 40px 8px 40px;">
+              <img src="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png"
+                   width="72" height="72" alt="FratRat"
+                   style="display:block; width:72px; height:72px; border-radius:18px;" />
+            </td>
+          </tr>
+
+          <!-- Heading -->
+          <tr>
+            <td align="center" class="px h1" style="padding:20px 40px 0 40px; font-size:30px; line-height:1.15; font-weight:bold; letter-spacing:-0.5px; color:#ffffff;">
+              Let's get you in.
+            </td>
+          </tr>
+
+          <!-- Body copy -->
+          <tr>
+            <td align="center" class="px" style="padding:16px 40px 0 40px; font-size:16px; line-height:1.6; color:#c8b9d8;">
+              Tap below to verify your school email and finish setting up FratRat.
+              It opens the app right where you left off.
+            </td>
+          </tr>
+
+          <!-- Button -->
+          <tr>
+            <td align="center" class="px" style="padding:30px 40px 8px 40px;">
+              <!--[if mso]>
+              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
+                href="{{VERIFY_URL}}" style="height:52px;v-text-anchor:middle;width:260px;" arcsize="50%"
+                strokecolor="#d7235a" fillcolor="#d7235a">
+                <w:anchorlock/>
+                <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:17px;font-weight:bold;">Verify my email</center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-- -->
+              <a class="hover-btn" href="{{VERIFY_URL}}"
+                 style="display:inline-block; background:#d7235a; color:#ffffff; font-size:17px; font-weight:bold; line-height:52px; text-align:center; text-decoration:none; border-radius:999px; padding:0 40px; min-width:180px; font-family:'Trebuchet MS', Helvetica, Arial, sans-serif;">
+                Verify my email
+              </a>
+              <!--<![endif]-->
+            </td>
+          </tr>
+
+          <!-- Expiry / single-use note -->
+          <tr>
+            <td align="center" class="px" style="padding:6px 40px 0 40px; font-size:13px; line-height:1.6; color:#9c8bb4;">
+              This link works once, on the device you started on, and expires in {{EXPIRES_MINUTES}} minutes.
+            </td>
+          </tr>
+
+          <!-- Fallback URL -->
+          <tr>
+            <td class="px" style="padding:28px 40px 0 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="border-top:1px solid rgba(255,255,255,0.09); padding-top:22px; font-size:12.5px; line-height:1.6; color:#9c8bb4;">
+                    Button not working? Paste this into your browser:
+                    <br />
+                    <a href="{{VERIFY_URL}}" style="color:#f9447c; word-break:break-all; font-family:Consolas, Menlo, monospace; font-size:12px;">{{VERIFY_URL}}</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Security note -->
+          <tr>
+            <td class="px" style="padding:24px 40px 40px 40px; font-size:12.5px; line-height:1.6; color:#8a789f;">
+              You're getting this because your address was used to verify a student account on FratRat.
+              Didn't do that? You can ignore this email, nothing happens without this link, and we never
+              store who you are.
+            </td>
+          </tr>
+
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+
+        <!-- Footer -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px;">
+          <tr>
+            <td align="center" style="padding:22px 40px; font-size:12px; line-height:1.6; color:#6f6088;">
+              FratRat &middot; for students 18+ &middot; runs on zkrp
+              <br />
+              <!-- Add a physical mailing address here if your sending policy requires one. -->
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

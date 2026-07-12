@@ -7,6 +7,7 @@ pub mod debug;
 pub mod handler;
 pub mod identity;
 pub mod keybundle;
+pub mod mailbox;
 pub mod messager;
 pub mod protocols;
 pub mod relay;

@@ -1,0 +1,69 @@
+syntax = "proto3";
+package zrp.mailbox.v1;
+
+import "google/protobuf/empty.proto";
+
+// Mailboxes let the relay wake an offline device without knowing who it is.
+//
+// A mailbox_id is a rotating, opaque CAPABILITY -- shared only with the people
+// who should be able to reach you (over the already-encrypted channel), never
+// derived from a name, peer id, or credential. Knowing the id is what grants
+// the ability to subscribe to it; treat it like a secret.
+//
+// Two lifecycles, one structure:
+//   USER  -- your rotating personal mailbox. A handful of your own devices
+//            register here; senders drop a message and the relay wakes you.
+//   PARTY -- a shared mailbox for one event. Every attendee registers their
+//            device token; a party update wakes all of them at once.
+//
+// There is deliberately NO Notify RPC. The relay fires pushes itself when it
+// routes a message addressed to a mailbox, so nothing here is a public endpoint
+// an attacker could use to spam a device or probe whether a mailbox is live.
+//
+// The relay stores only: mailbox_id -> {device tokens, expiry}. No identity, no
+// peer id, no link to the nullifier set. In memory, TTL'd, never logged.
+enum MailboxKind {
+  USER  = 0;
+  PARTY = 1;
+}
+
+// --- store-and-forward -------------------------------------------------------
+//
+// Because gossipsub is ephemeral and push is deferred, an offline recipient's
+// like/DM/party message is stored as an opaque, end-to-end-encrypted blob under
+// the (rotating, capability) mailbox id, in S3, and fetched on reconnect. The
+// relay cannot read the ciphertext; it only routes by mailbox id. Knowing the
+// id is the capability to deposit to and fetch from it. Objects age out via an
+// S3 lifecycle rule on the `mb/` prefix, so nothing lingers.
+
+message DepositRequest {
+  string mailbox_id = 1;
+  bytes  ciphertext = 2;  // opaque; encrypted client-side to the pair/party
+}
+message DepositResponse {
+  string msg_id     = 1;  // lexicographically sortable = chronological
+}
+
+message FetchRequest {
+  string mailbox_id = 1;
+  // Cursor: last msg_id you already have. Empty = from the beginning of what's
+  // retained. The recipient tracks this per mailbox; there is no server-side
+  // delete, so one party can't drop another's undelivered mail.
+  string after      = 2;
+  uint32 limit      = 3;  // 0 = server default
+}
+message Envelope {
+  string msg_id     = 1;
+  bytes  ciphertext = 2;
+  uint64 stored_at  = 3;  // unix millis, advisory
+}
+message FetchResponse {
+  repeated Envelope envelopes = 1;
+  bool has_more               = 2;
+}
+
+service MailboxService {
+  // --- store-and-forward (active) ---
+  rpc Deposit(DepositRequest) returns (DepositResponse);
+  rpc Fetch(FetchRequest)     returns (FetchResponse);
+}

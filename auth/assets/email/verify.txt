@@ -1,0 +1,14 @@
+Let's get you in.
+
+Verify your school email and finish setting up FratRat by opening this link:
+
+{{VERIFY_URL}}
+
+This link works once, on the device you started on, and expires in
+{{EXPIRES_MINUTES}} minutes.
+
+You're getting this because your address was used to verify a student account
+on FratRat. Didn't do that? You can ignore this email — nothing happens without
+this link, and we never store who you are.
+
+FratRat · for students 18+ · runs on zkrp

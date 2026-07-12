@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )?
         .with_quic()
         .with_dns()?
-        .with_behaviour(|key| RelayBehavior::new(key))?
+        .with_behaviour(RelayBehavior::new)?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(config.idle_connection_timeout))
         .build();
 

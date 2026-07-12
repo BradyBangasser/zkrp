@@ -1,3 +1,10 @@
+mod algorithm;
+pub mod likes;
+
+use crate::likes::{
+    CONTENT_TYPE_LIKE, CONTENT_TYPE_LIKE_BACK, CONTENT_TYPE_LIKE_DECLINED, LikeBackPayload,
+    LikePayload,
+};
 use libghost::behavior::ClientBehavior;
 use libghost::blob::BlobError;
 use libghost::context::{SwarmCommand, ZRPContext, ZRPHandle};
@@ -443,11 +450,6 @@ pub fn delete_alert(id: u64) {
 pub const CONTENT_TYPE_MESSAGE: u16 = 0x0040;
 pub const CONTENT_TYPE_MESSAGE_BACKFILL: u16 = 0x0041;
 
-// ── Like flow (always DM, always encrypted to recipient pubkey) ──────────────
-pub const CONTENT_TYPE_LIKE: u16 = 0x0050;
-pub const CONTENT_TYPE_LIKE_BACK: u16 = 0x0051;
-pub const CONTENT_TYPE_LIKE_DECLINED: u16 = 0x0052;
-
 // ── Direct invite flow (DM, encrypted) ──────────────────────────────────────
 pub const CONTENT_TYPE_INVITE: u16 = 0x0060;
 pub const CONTENT_TYPE_INVITE_ACCEPT: u16 = 0x0061;
@@ -670,30 +672,6 @@ pub fn can_invite(peer_id: String) -> bool {
 pub struct PeerRelationship {
     pub peer_id: String,
     pub state: RelationshipState,
-}
-
-// MARK: - Like and Invite payloads
-
-/// Sent as content_type 0x0050 (LIKE) over the peer's DM topic.
-/// conversation_key_enc is the proposed conversation key encrypted
-/// to the recipient's libp2p public key via encrypt_for_peer().
-/// The relay sees only ciphertext; neither key nor intent is exposed.
-#[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
-pub struct LikePayload {
-    pub conversation_key_enc: Vec<u8>,
-    pub sender_peer_id: String,
-    pub timestamp: u64,
-}
-
-/// Sent as content_type 0x0051 (LIKE_BACK) — confirms mutual match.
-/// Contains the same conversation_key_enc (re-encrypted to sender)
-/// so both sides end up with the same decrypted conversation key.
-#[derive(uniffi::Record, serde::Serialize, serde::Deserialize, Clone)]
-pub struct LikeBackPayload {
-    pub conversation_id: String,
-    pub conversation_key_enc: Vec<u8>, // encrypted back to original sender
-    pub sender_peer_id: String,
-    pub timestamp: u64,
 }
 
 /// Sent as content_type 0x0060 (INVITE) over the peer's DM topic.
@@ -1389,7 +1367,7 @@ impl MeshNode {
                 let mut ctx = ZRPContext::with_store(Arc::clone(&store));
                 ctx.register_handler("swift", bridge).await;
 
-                if let Ok(_) = std::env::var("ZRP_DEBUG_LOG_ENDPOINT") {
+                if std::env::var("ZRP_DEBUG_LOG_ENDPOINT").is_ok() {
                     ctx.set_debug_log_endpoint("relay.a.central.eu.infra.zkrp.net");
                 }
 

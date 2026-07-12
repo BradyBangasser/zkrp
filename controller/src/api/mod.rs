@@ -15,6 +15,7 @@ use crate::{
 
 mod blob;
 mod log;
+mod mailbox;
 mod relay;
 
 pub mod proto {

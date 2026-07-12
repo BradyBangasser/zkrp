@@ -1,22 +1,37 @@
 syntax = "proto3";
 package zrp.auth.v1;
 
+// Enrollment is three unary calls. There is deliberately no stream: the email
+// round trip takes minutes, and holding a stream open across it would make the
+// server stateful -- the one thing this service must not be. State that would
+// normally live server-side is carried by the client in an opaque, MAC'd
+// `verification_token`.
+//
+// The ONLY thing persisted is a set of 32-byte nullifiers. Never an email, a
+// key id, a peer id, an issued credential, or a mapping between any of them.
+// A nullifier answers exactly one question: "has this address enrolled?"
 service AuthService {
-  rpc ExchangeAttestation (stream AuthMessage) returns (stream AuthMessage);
+  rpc GetChallenge (ChallengeRequest) returns (ChallengeResponse);
+  rpc Redeem (RedeemRequest) returns (RedeemResponse);
 }
 
-message AuthMessage {
-  oneof payload {
-    bytes challenge_nonce = 1;
-    
-    AttestationProof proof = 2;
-    
-    bytes bbs_plus_signature = 3;
-  }
+message ChallengeRequest {
+  string email = 1;
 }
 
-message AttestationProof {
-    bytes attestation_object = 1;
-    string key_id = 2;
-    bytes zkp_public_key = 3;
+message ChallengeResponse {
+  bytes challenge = 1;
+}
+
+message RedeemRequest {
+  bytes verification_token = 1;
+  bytes assertion = 2;
+  bytes credential_request = 3;
+}
+
+message RedeemResponse {
+  bytes signature         = 1;
+  bytes issuer_public_key = 2;
+  string params_label     = 3;
+  string epoch            = 4;
 }

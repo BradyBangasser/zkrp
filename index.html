@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FratRat — the party stays off the record</title>
+<meta name="description" content="FratRat is the privacy-first way to find the party and the people at your college. Real you, verified — but our servers never see your name or keep it. iPhone, students only." />
+<meta name="theme-color" content="#1b0810" />
+
+<meta property="og:title" content="FratRat" />
+<meta property="og:description" content="Privacy-first dating and partying for college students. Real you, verified — our servers never see your name or keep it." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png" />
+<meta name="twitter:card" content="summary" />
+
+<link rel="icon" type="image/svg+xml" href="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.svg" />
+<link rel="apple-touch-icon" href="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    --ink:      #1b0810;   /* deep wine, warm — pulled from the logo's dark end */
+    --surface:  #2a0f1a;
+    --surface-2:#351421;
+    --line:     rgba(255, 255, 255, .10);
+    --text:     #fdf4f7;
+    --muted:    #dab0c0;
+    --pink:     #f9447c;   /* logo gradient, top-left  */
+    --pink-deep:#d7235a;   /* logo gradient, bottom-right */
+    --grad:     linear-gradient(135deg, #f9447c, #d7235a);
+    --on-pink:  #2a0714;   /* dark wine text for on-gradient contrast */
+
+    --display: "Baloo 2", system-ui, sans-serif;
+    --body: "Space Grotesk", system-ui, sans-serif;
+    --wrap: 1080px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+
+  /* Ambient light — every glow is now the logo's own raspberry. */
+  .glow {
+    position: fixed;
+    inset: -20vmax;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(38vmax 38vmax at var(--gx, 32%) 10%, rgba(249, 68, 124, .42), transparent 60%),
+      radial-gradient(32vmax 32vmax at 84% 6%, rgba(215, 35, 90, .40), transparent 62%),
+      radial-gradient(28vmax 28vmax at 60% 0%, rgba(255, 120, 160, .18), transparent 58%);
+    animation: drift 18s ease-in-out infinite alternate;
+  }
+  @keyframes drift {
+    from { transform: translate3d(-2%, -1%, 0) scale(1); }
+    to   { transform: translate3d(3%, 2%, 0) scale(1.08); }
+  }
+
+  .page { position: relative; z-index: 1; }
+  .wrap { width: 100%; max-width: var(--wrap); margin-inline: auto; padding-inline: 24px; }
+
+  /* ---- top bar ---- */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-block: 22px;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-family: var(--display); font-weight: 700; font-size: 20px;
+    letter-spacing: -.01em; text-decoration: none;
+  }
+  .brand img { width: 34px; height: 34px; border-radius: 9px; display: block; }
+  .top-link {
+    font-size: 14.5px; color: var(--muted); text-decoration: none;
+    padding: 9px 14px; border-radius: 999px;
+    transition: color .18s ease, background .18s ease;
+  }
+  .top-link:hover { color: var(--text); background: rgba(255,255,255,.06); }
+
+  /* ---- hero ---- */
+  .hero {
+    text-align: center;
+    padding-top: clamp(36px, 8vw, 84px);
+    padding-bottom: clamp(28px, 5vw, 56px);
+  }
+  .icon-stage { position: relative; width: 152px; height: 152px; margin: 0 auto 30px; }
+  .icon-stage::before {
+    content: "";
+    position: absolute; inset: -28%;
+    border-radius: 44px;
+    background: radial-gradient(closest-side, rgba(249, 68, 124, .6), transparent 72%);
+    filter: blur(20px);
+    animation: pulse 3.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: .5;  transform: scale(.95); }
+    50%      { opacity: .95; transform: scale(1.07); }
+  }
+  .icon-stage img {
+    position: relative; width: 100%; height: 100%;
+    border-radius: 34px; object-fit: cover;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,.22) inset,
+      0 26px 64px -18px rgba(249, 68, 124, .6),
+      0 10px 30px -12px rgba(0,0,0,.7);
+  }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-size: 12.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 22px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--pink); box-shadow: 0 0 12px var(--pink); }
+
+  .hero h1 {
+    font-family: var(--display); font-weight: 800;
+    font-size: clamp(44px, 8.5vw, 88px); line-height: .96;
+    letter-spacing: -.03em; margin: 0 auto 20px; max-width: 16ch;
+  }
+  .hero h1 .em { color: var(--pink); }
+
+  .lede {
+    margin: 0 auto; max-width: 48ch;
+    font-size: clamp(16px, 2.1vw, 19px); color: var(--muted);
+  }
+  .lede b { color: var(--text); font-weight: 600; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 34px; }
+  .btn {
+    font-family: var(--display); font-weight: 700; font-size: 16.5px;
+    text-decoration: none; padding: 15px 26px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 11px;
+    transition: transform .12s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn svg { display: block; }
+
+  .btn-primary {
+    background: var(--grad); color: var(--on-pink);
+    box-shadow: 0 14px 34px -12px rgba(249, 68, 124, .8);
+  }
+  .btn-primary:hover { box-shadow: 0 18px 42px -12px rgba(249, 68, 124, .95); }
+
+
+  .fineprint { margin-top: 20px; font-size: 13px; color: var(--muted); }
+  .fineprint .pill {
+    display: inline-block; font-family: var(--display); font-weight: 700; font-size: 11.5px;
+    color: var(--pink); border: 1.5px solid rgba(249,68,124,.45);
+    border-radius: 999px; padding: 1px 9px; margin-right: 8px; vertical-align: 1px;
+  }
+
+  /* ---- ticker ---- */
+  .ticker {
+    margin-top: clamp(40px, 7vw, 72px);
+    border-block: 1.5px solid var(--line);
+    background: rgba(255,255,255,.02);
+    overflow: hidden; white-space: nowrap;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  }
+  .ticker-track { display: inline-flex; gap: 44px; padding-block: 14px; animation: slide 26s linear infinite; }
+  .ticker-track span {
+    font-family: var(--display); font-weight: 700; font-size: 15px;
+    letter-spacing: .04em; color: var(--muted); text-transform: lowercase;
+  }
+  .ticker-track span::after { content: "·"; margin-left: 44px; color: var(--pink); }
+  @keyframes slide { to { transform: translateX(-50%); } }
+
+  /* ---- features ---- */
+  .features {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;
+    padding-block: clamp(52px, 9vw, 96px);
+  }
+  .card {
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border: 1.5px solid var(--line); border-radius: 22px;
+    padding: 28px 26px 30px;
+  }
+  .card .no { font-family: var(--display); font-weight: 700; font-size: 13px; color: var(--pink); letter-spacing: .04em; }
+  .card h3 { font-family: var(--display); font-weight: 700; font-size: 22px; letter-spacing: -.01em; margin: 12px 0 8px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+  /* ---- footer ---- */
+  footer { border-top: 1.5px solid var(--line); padding-block: 40px 56px; }
+  .foot-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; }
+  .foot-brand { display: inline-flex; align-items: center; gap: 11px; font-family: var(--display); font-weight: 700; font-size: 17px; }
+  .foot-brand img { width: 28px; height: 28px; border-radius: 8px; }
+  .foot-links { display: flex; flex-wrap: wrap; gap: 10px; }
+  .foot-links a {
+    text-decoration: none; color: var(--muted); font-size: 14.5px;
+    padding: 8px 14px; border-radius: 999px; border: 1.5px solid transparent;
+    transition: color .18s ease, border-color .18s ease;
+  }
+  .foot-links a:hover { color: var(--text); border-color: var(--line); }
+  .foot-links a.dev { color: var(--text); border-color: var(--line); }
+  .foot-note { margin-top: 22px; font-size: 12.5px; color: var(--muted); max-width: 62ch; }
+
+  a:focus-visible, .btn:focus-visible { outline: 3px solid #fff; outline-offset: 3px; border-radius: 999px; }
+
+  @media (max-width: 760px) {
+    .features { grid-template-columns: 1fr; }
+    .top-link.hide-sm { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .glow, .icon-stage::before, .ticker-track { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+
+<body>
+  <div class="glow" aria-hidden="true"></div>
+
+  <div class="page">
+    <div class="wrap">
+      <header class="top">
+        <a class="brand" href="#top">
+          <img src="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.svg"
+               onerror="this.onerror=null;this.src='https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png';"
+               alt="FratRat logo" />
+          FratRat
+        </a>
+        <nav>
+          <a class="top-link" href="https://www.zkrp.net" target="_blank" rel="noopener">Runs on zkrp</a>
+        </nav>
+      </header>
+    </div>
+
+    <main id="top">
+      <section class="wrap hero">
+        <div class="icon-stage">
+          <img src="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.svg"
+               onerror="this.onerror=null;this.src='https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png';"
+               alt="FratRat app icon" />
+        </div>
+
+        <h1>Party like <span class="em">nobody's</span> watching.</h1>
+
+        <p class="lede">
+          FratRat is the privacy-first way to find the party and the people at your school.
+          You show up as the real you — <b>and who that is never leaves your phone.</b>
+          Your college years are yours. We built FratRat so they stay that way.
+        </p>
+
+        <div class="cta">
+          <!-- Swap this href for your App Store link when live. See the "official badge"
+               snippet if you'd rather use Apple's marketing badge here. -->
+          <a class="btn btn-primary" href="#" aria-label="Download FratRat for iPhone">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v11m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M5 19h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+            </svg>
+            Download for iPhone
+          </a>
+        </div>
+
+        <p class="fineprint"><span class="pill">18+</span> Verified students only — join with your real name and school email.</p>
+      </section>
+
+      <div class="ticker" aria-hidden="true">
+        <div class="ticker-track">
+          <span>darties</span><span>formals</span><span>tailgates</span><span>matches</span>
+          <span>off the record</span><span>your campus</span><span>no data trail</span><span>tonight</span>
+          <span>darties</span><span>formals</span><span>tailgates</span><span>matches</span>
+          <span>off the record</span><span>your campus</span><span>no data trail</span><span>tonight</span>
+        </div>
+      </div>
+
+      <section class="wrap features" id="what">
+        <article class="card">
+          <div class="no">Private</div>
+          <h3>We can't see you</h3>
+          <p>You verify as a real student with your real name — but the proof happens on your phone, so our servers never learn who you are and keep nothing to lose.</p>
+        </article>
+        <article class="card">
+          <div class="no">People</div>
+          <h3>Meet your class</h3>
+          <p>Match with real students at your own school — not the whole internet. Everyone here got in with a verified campus email.</p>
+        </article>
+        <article class="card">
+          <div class="no">Parties</div>
+          <h3>Find the function</h3>
+          <p>See what's happening tonight, from darties to formals, before it ever hits the group chat. Show up, don't get left on read.</p>
+        </article>
+        <article class="card">
+          <div class="no">Alerts</div>
+          <h3>Know before you go</h3>
+          <p>Real-time word from everyone on campus — where it's popping, what just got shut down, and what's actually worth leaving your dorm for.</p>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div class="foot-row">
+          <span class="foot-brand">
+            <img src="https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.svg"
+                 onerror="this.onerror=null;this.src='https://d3gyk21v21ipn5.cloudfront.net/perm/icon_gradient_square.png';"
+                 alt="" />
+            FratRat
+          </span>
+          <div class="foot-links">
+            <a href="https://www.zkrp.net" target="_blank" rel="noopener">Runs on zkrp ↗</a>
+            <a href="https://www.bangasser.dev" target="_blank" rel="noopener">bangasser.dev ↗</a>
+          </div>
+        </div>
+        <p class="foot-note">FratRat is an independent app for college students and isn't affiliated with any university. Must be 18+ and enrolled to join.</p>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var glow = document.querySelector('.glow');
+      if (!glow || !window.matchMedia('(pointer: fine)').matches) return;
+      addEventListener('pointermove', function (e) {
+        glow.style.setProperty('--gx', (e.clientX / innerWidth * 100).toFixed(1) + '%');
+      }, { passive: true });
+    })();
+  </script>
+</body>
+</html>

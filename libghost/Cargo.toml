@@ -37,7 +37,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 curve25519-dalek = { version = "5.0.0-rc.1", features = ["rand_core"] }
 sha3 = "0.12"
-ulid = "1.2"
+ulid = "1"
 aes-gcm = "0.10.3"
 thiserror = "2.0.18"
 hex = "0.4.3"
@@ -46,6 +46,8 @@ chacha20poly1305 = "0.10"
 sha2 = "0.11"
 tokio-stream = { version = "0.1", features = ["time"] }
 libp2p-core = "0.43"
+aws-sdk-s3 = "1"
+aws-config = "1"
 
 [build-dependencies]
 prost-build = "0.14"
