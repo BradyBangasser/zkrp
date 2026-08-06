@@ -1,0 +1,20 @@
+id: zkrp
+name: "zkRP: Encrypted P2P Network"
+period: "2026"
+weight: 8
+start: "2026-01"
+tags: [sre, cloud, software, sales]
+tech: [Rust, gRPC, libp2p, Prometheus]
+bullets:
+  - text: "Built an encrypted peer-to-peer network of gRPC services (auth, relay, mailbox, blob storage) in Rust on libp2p."
+    tags: [sre, cloud, software, sales]
+    priority: 1
+  - text: "Operate every service to a 99.9% availability SLO with a 99% customer SLA, measured and verified with Prometheus."
+    tags: [sre, cloud, sales]
+    priority: 1
+  - text: "Designed privacy-first authentication issuing anonymous credentials, persisting only nullifiers and never user identity."
+    tags: [software, sre, sales]
+    priority: 2
+  - text: "Built a share-nothing, thread-per-core runtime and store-and-forward mailboxes for high-availability serving."
+    tags: [sre, cloud, software]
+    priority: 2
