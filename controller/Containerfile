@@ -1,15 +1,37 @@
-FROM rust:1.96-slim AS builder
-RUN apt-get update && apt-get install -y \
-  protobuf-compiler \
-  && rm -rf /var/lib/apt/lists/*
+# Build context must be the REPO ROOT (workspace path deps: libghost, ../proto).
+# Build with:  podman build -f controller/Containerfile .
+#              docker buildx build -f controller/Containerfile .
+
+FROM rust:1.96-slim-trixie AS builder
+
+# protobuf-compiler is required by libghost/build.rs and controller/build.rs
+# (prost_build / tonic_prost_build shell out to protoc).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY . .
-RUN cargo build --release -p controller
+
+# -p controller keeps the ios/ crate (and therefore uniffi_bindgen) out of the
+# build entirely. --locked requires a committed Cargo.lock.
+RUN cargo build --release --locked -p controller
+
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y \
-  ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-RUN useradd -r -s /bin/false -d /data zkrp
+
+# ca-certificates is required for outbound TLS (aws-sdk-s3, public-ip).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /usr/sbin/nologin -d /data zkrp \
+    && mkdir -p /data \
+    && chown zkrp:zkrp /data
+
 COPY --from=builder /build/target/release/controller /usr/local/bin/zkrp-relay
+
+USER zkrp
+EXPOSE 9000 9001
+
 ENTRYPOINT ["/usr/local/bin/zkrp-relay"]
