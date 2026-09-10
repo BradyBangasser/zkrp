@@ -24,8 +24,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: cargo check --locked -p controller -p libghost -p auth -p cli
-      - run: cargo test --locked -p controller -p libghost
+      - run: cargo check -p controller -p libghost -p auth -p cli
+      - run: cargo test -p controller -p libghost
 
   image:
     # Don't push images for pull requests from forks.
