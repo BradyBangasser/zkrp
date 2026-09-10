@@ -21,7 +21,7 @@ RUN cargo build --release -p controller
 FROM debian:trixie-slim
 
 # ca-certificates is required for outbound TLS (aws-sdk-s3, public-ip).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
