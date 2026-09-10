@@ -1,0 +1,10 @@
+**/target
+target/**
+.git/
+.github/
+ios/
+index.html
+fly.toml
+README.md
+LICENSE
+.env
