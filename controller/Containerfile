@@ -8,6 +8,7 @@ FROM rust:1.96-slim-trixie AS builder
 # (prost_build / tonic_prost_build shell out to protoc).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler \
+      libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
