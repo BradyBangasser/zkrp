@@ -15,7 +15,7 @@ COPY . .
 
 # -p controller keeps the ios/ crate (and therefore uniffi_bindgen) out of the
 # build entirely. --locked requires a committed Cargo.lock.
-RUN cargo build --release --locked -p controller
+RUN cargo build --release -p controller
 
 
 FROM debian:trixie-slim
