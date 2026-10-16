@@ -14,12 +14,12 @@ use crate::behavior::{RelayBehavior, RelayBehaviorEvent};
 use crate::config::RelayConfig;
 use crate::registry::{Registry, SelfEntry};
 use futures::StreamExt;
+use libghost::admit::AdmitResponse;
 use libghost::{identity::NodeIdentity, transport::TransportConfig};
 use libp2p::request_response::{self, ResponseChannel};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, identify, noise, relay, swarm::SwarmEvent, yamux,
 };
-use libghost::admit::AdmitResponse;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::Path;
@@ -157,8 +157,7 @@ fn main() -> ExitCode {
     let _ = dotenv::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -237,8 +236,13 @@ async fn run(relay_config: RelayConfig) -> Result<(), BoxError> {
 
     let admission = match &relay_config.admission {
         Some(a) => Some(Arc::new(
-            Admission::new(&a.params_label, &a.issuer_public_key, a.epoch_secs, swarm.local_peer_id())
-                .map_err(|e| format!("ISSUER_PUBLIC_KEY: {e}"))?,
+            Admission::new(
+                &a.params_label,
+                &a.issuer_public_key,
+                a.epoch_secs,
+                swarm.local_peer_id(),
+            )
+            .map_err(|e| format!("ISSUER_PUBLIC_KEY: {e}"))?,
         )),
         None => None,
     };
@@ -251,7 +255,10 @@ async fn run(relay_config: RelayConfig) -> Result<(), BoxError> {
     // Advertise the first public TCP address; clients dial over TCP.
     let advertised_addr = external
         .iter()
-        .find(|a| a.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::Tcp(_))))
+        .find(|a| {
+            a.iter()
+                .any(|p| matches!(p, libp2p::multiaddr::Protocol::Tcp(_)))
+        })
         .map(|a| format!("{a}/p2p/{peer_id}"));
 
     let state = RelayState {
@@ -359,20 +366,21 @@ async fn export_gauges(state: RelayState) {
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     loop {
         tick.tick().await;
-        telemetry::gauge!("zkrp_connected_peers").set(state.connected_peers.load(Ordering::Relaxed));
+        telemetry::gauge!("zkrp_connected_peers")
+            .set(state.connected_peers.load(Ordering::Relaxed));
         telemetry::gauge!("zkrp_active_reservations")
             .set(state.active_reservations.load(Ordering::Relaxed));
-        telemetry::gauge!("zkrp_active_circuits").set(state.active_circuits.load(Ordering::Relaxed));
+        telemetry::gauge!("zkrp_active_circuits")
+            .set(state.active_circuits.load(Ordering::Relaxed));
         telemetry::gauge!("zkrp_registry_healthy").set(state.registry.is_healthy() as u8);
         // 0 = HEALTHY, 1 = DEGRADED, 2 = UNHEALTHY (proto HealthStatus).
-        telemetry::gauge!("zkrp_relay_health_status")
-            .set(api::relay::health_status(&state) as i32);
+        telemetry::gauge!("zkrp_relay_health_status").set(api::relay::health_status(&state) as i32);
         telemetry::gauge!("zkrp_uptime_seconds").set(state.started_at.elapsed().as_secs_f64());
     }
 }
 
 fn dec(counter: &AtomicU32) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
 }
 
 /// Peer ids and addresses are logged at DEBUG only: at the default level the
@@ -385,7 +393,11 @@ fn handle_event(
     event: SwarmEvent<RelayBehaviorEvent>,
 ) {
     match event {
-        SwarmEvent::ConnectionEstablished { peer_id, num_established, .. } => {
+        SwarmEvent::ConnectionEstablished {
+            peer_id,
+            num_established,
+            ..
+        } => {
             if num_established.get() == 1 {
                 state.connected_peers.fetch_add(1, Ordering::Relaxed);
                 if state.admission.is_some() && !gate.admitted.contains(&peer_id) {
@@ -398,11 +410,17 @@ fn handle_event(
 
         SwarmEvent::Behaviour(RelayBehaviorEvent::Admit(request_response::Event::Message {
             peer,
-            message: request_response::Message::Request { request, channel, .. },
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
             ..
         })) => {
             let Some(adm) = state.admission.clone() else {
-                let _ = swarm.behaviour_mut().admit.send_response(channel, AdmitResponse::Admitted);
+                let _ = swarm
+                    .behaviour_mut()
+                    .admit
+                    .send_response(channel, AdmitResponse::Admitted);
                 return;
             };
             // The pairing check takes milliseconds; keep it off the swarm loop.
@@ -410,7 +428,10 @@ fn handle_event(
             tokio::task::spawn_blocking(move || {
                 let me = adm.relay_peer_id().to_vec();
                 let client = peer.to_bytes();
-                let scope = zkcred::Scope::P2p { relay_peer_id: &me, client_peer_id: &client };
+                let scope = zkcred::Scope::P2p {
+                    relay_peer_id: &me,
+                    client_peer_id: &client,
+                };
                 let result = adm.check(scope, &request);
                 admission::record("p2p", &result);
                 if let Err(e) = &result {
@@ -420,7 +441,12 @@ fn handle_event(
             });
         }
 
-        SwarmEvent::ConnectionClosed { peer_id, num_established, cause, .. } => {
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            num_established,
+            cause,
+            ..
+        } => {
             // Deliberately NOT calling kademlia.remove_peer here. Mobile peers
             // reconnect constantly; evicting them on every disconnect kept the
             // routing table permanently empty.
@@ -453,14 +479,16 @@ fn handle_event(
                 relay::Event::ReservationReqAccepted { renewed: false, .. } => {
                     state.active_reservations.fetch_add(1, Ordering::Relaxed);
                 }
-                relay::Event::ReservationClosed { .. } | relay::Event::ReservationTimedOut { .. } => {
+                relay::Event::ReservationClosed { .. }
+                | relay::Event::ReservationTimedOut { .. } => {
                     dec(&state.active_reservations);
                 }
                 relay::Event::CircuitReqAccepted { .. } => {
                     state.active_circuits.fetch_add(1, Ordering::Relaxed);
                 }
                 relay::Event::CircuitClosed { .. } => dec(&state.active_circuits),
-                relay::Event::ReservationReqDenied { .. } | relay::Event::CircuitReqDenied { .. } => {
+                relay::Event::ReservationReqDenied { .. }
+                | relay::Event::CircuitReqDenied { .. } => {
                     info!("relay server denied a request (limits reached)");
                 }
                 _ => {}
