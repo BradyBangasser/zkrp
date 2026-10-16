@@ -1,3 +1,7 @@
+// async_trait (ours and tonic's generated server traits) adds #[must_use] to
+// futures that already are; clippy 1.99+ flags the expansion, not our code.
+#![allow(clippy::double_must_use)]
+
 mod admission;
 mod api;
 mod behavior;
