@@ -1,0 +1,14 @@
+# The shared bootstrap name, answered by every relay. DNS-01 through
+# Cloudflare, because HTTP/TLS challenges would land on whichever relay DNS
+# picks. Needs the zkrp-caddy image (compose/bootstrap.yaml sets it).
+{$BOOTSTRAP_DOMAIN} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	handle /healthz {
+		reverse_proxy relay:9466
+	}
+	handle {
+		reverse_proxy h2c://relay:9001
+	}
+}

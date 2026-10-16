@@ -1,0 +1,50 @@
+[package]
+name = "zkrp-auth"
+description = "zkrp enrollment: magic link + App Attest, nullifiers, blind credential issuance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zkrp-auth"
+path = "src/main.rs"
+
+[dependencies]
+zkcred.workspace = true
+telemetry.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+anyhow = "1"
+thiserror.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+dotenv.workspace = true
+serde.workspace = true
+serde_json = "1"
+
+# Nullifier set, in Postgres.
+sqlx = { workspace = true, features = ["macros"] }
+
+# The pepper never leaves KMS: nullifier = KMS.GenerateMac(key, email).
+aws-config.workspace = true
+aws-sdk-kms = "1"
+aws-sdk-sesv2 = "1"
+
+# Local MAC keys (nullifier fallback), token encryption, randomness.
+ring.workspace = true
+chacha20poly1305.workspace = true
+getrandom = "0.3"
+
+# App Attest: CBOR attestation object, X.509 chain (P-384 / P-256 ECDSA).
+ciborium = "0.2"
+x509-parser = { version = "0.18", features = ["verify"] }
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true

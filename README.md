@@ -33,12 +33,26 @@ metrics and the error-budget model.
 encrypted peer-to-peer network.
 
 Full documentation is under `docs/`: architecture, the service catalog, the
-**gRPC API reference** (generated from the protos), deployment, and the
-reliability model.
+**gRPC API reference** (generated from the protos), and the reliability model.
+Deployment is in [`deploy/README.md`](deploy/README.md).
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `crates/libghost` | the client library: encrypted libp2p mesh, admission, enrollment, discovery |
+| `crates/relay` | `zkrp-relay`: circuit relay, admission, gRPC control plane |
+| `crates/auth` | `zkrp-auth`: anonymous enrollment and credential issuance |
+| `crates/zkcred` | BBS credentials: blind issuance, unlinkable presentations |
+| `crates/telemetry` | Prometheus metrics (counts only) |
+| `proto/` | the gRPC APIs |
+| `Dockerfile`, `docker-bake.hcl` | the three images, from one compile |
+| `compose.yml` | the core host: auth + Postgres + Caddy |
+| `deploy/` | relay hosts, local stack, env templates, Caddy configs, systemd |
 
 ## Running it
 
 ```bash
-cp .env.example .env    # then see docs/deployment.md for keys
-docker compose up -d --build
+cargo test --workspace          # 42 tests; protoc is vendored
+scripts/local-up.sh             # the whole system locally (deploy/local)
 ```

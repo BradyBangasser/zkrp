@@ -1,0 +1,2 @@
+# The core host: the enrollment API.
+import sites/auth.caddy

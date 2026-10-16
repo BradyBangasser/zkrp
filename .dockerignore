@@ -1,6 +1,14 @@
-**/target
-.git
-.env
-*.env
-**/*.cred
+# Images build from the repository root but need only the workspace and the
+# Caddy configs: everything is excluded, then those are let back in.
+# Never in an image: .env files and secrets, target/.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!proto/
+!deploy/caddy/
+crates/*/target/
+**/.env
+**/.env.*
 **/*.key
+**/*.cred

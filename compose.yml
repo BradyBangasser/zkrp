@@ -1,0 +1,149 @@
+# The zkrp core: enrollment (auth) and Postgres behind Caddy, on a server
+# with a public IP (EC2 or Hetzner; deploy/README.md). Caddy terminates TLS
+# with Let's Encrypt certificates it obtains and renews itself, and passes
+# gRPC to auth in cleartext HTTP/2 on the compose network:
+#
+#   https://<AUTH_DOMAIN>  → auth:9002   enrollment (apps)
+#   postgres:5432          → the nullifier set, and the relay registry that
+#                            relays on other hosts reach over a private network
+#
+# Relays run elsewhere (deploy/relay/compose.yml).
+#
+#   cp deploy/env/postgres.env.example deploy/env/postgres.env
+#   cp deploy/env/auth.env.example     deploy/env/auth.env
+#   cp deploy/env/caddy.env.example    deploy/env/caddy.env
+#   # fill in all three, then
+#   docker compose run --rm --no-deps auth keygen /secrets   # once; prints ISSUER_PUBLIC_KEY
+#   docker compose up -d
+#
+# The images build from this repository (`docker compose build`) or come from
+# the registry (`docker compose pull`); REGISTRY and TAG override.
+#
+# The updater service keeps auth and Caddy on the newest images CI publishes:
+# every five minutes it pulls, and recreates only what changed. It needs
+# `docker login ghcr.io` (a token with read:packages) while the images are
+# private. To update by hand instead, pin TAG=<commit sha> in .env or start
+# without it: `docker compose up -d postgres auth caddy`.
+#
+# Bind mounts carry `z` so they work under SELinux (Fedora/RHEL); Docker
+# ignores it elsewhere.
+
+name: zkrp-core
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    restart: unless-stopped
+    # POSTGRES_PASSWORD, AUTH_DB_PASSWORD, RELAY_DB_PASSWORD
+    env_file: [deploy/env/postgres.env]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Run once, on first start of an empty volume.
+      - ./db/init:/docker-entrypoint-initdb.d:ro,z
+      - ./db/auth.sql:/schema/auth.sql:ro,z
+      - ./db/registry.sql:/schema/registry.sql:ro,z
+    # Loopback by default. Relays on other hosts reach the registry over a
+    # private network (Hetzner private network, VPC, WireGuard): set
+    # POSTGRES_BIND in .env to that interface's address. Never a public one.
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  auth:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-auth:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth
+    restart: unless-stopped
+    env_file: [deploy/env/auth.env]
+    # Secrets are files at /secrets (CREDENTIALS_DIRECTORY), never env
+    # vars. A named volume, not a bind mount, so the updater can recreate
+    # auth safely; back up issuer-key from it (deploy/README.md).
+    volumes:
+      - auth-secrets:/secrets
+    expose: ["9002", "9465"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-auth", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+    # Auth fails closed without its nullifier set, so wait for Postgres.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-caddy:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: caddy
+    restart: unless-stopped
+    # AUTH_DOMAIN
+    env_file: [deploy/env/caddy.env]
+    environment:
+      CADDY_ROLE: core
+    ports: ["80:80", "443:443"]
+    volumes:
+      - caddy-data:/data # certificates, kept across restarts
+    depends_on: [auth]
+
+  # Pulls new images and recreates auth and Caddy if theirs changed. Never
+  # Postgres (pinned; upgrade it deliberately) and never itself: its bind
+  # mounts name paths inside this container, which a recreate from in here
+  # would get wrong. Update it with
+  # `docker compose pull updater && docker compose up -d updater`.
+  # The updater drives the host's Docker through its socket, which is full
+  # control of Docker on this machine. Rather not? Leave it out and use
+  # deploy/systemd/zkrp-update@.timer.
+  updater:
+    image: docker.io/library/docker:29-cli
+    restart: unless-stopped
+    # On SELinux hosts the socket and files below are otherwise unreadable.
+    security_opt: ["label=disable"]
+    environment:
+      INTERVAL: ${UPDATE_INTERVAL:-300}
+    volumes:
+      # The host's Docker (podman: DOCKER_SOCKET=/run/podman/podman.sock).
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      # The registry login from `docker login` (sudo: DOCKER_CONFIG=/root/.docker).
+      - ${DOCKER_CONFIG:-${HOME}/.docker}/config.json:/root/.docker/config.json:ro
+      # This project: compose file, .env, deploy/env/*.env.
+      - ./:/project:ro
+    working_dir: /project
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          if docker compose pull --quiet auth caddy; then
+            docker compose up -d --no-build auth caddy
+            docker image prune -f >/dev/null
+          else
+            echo "pull failed; keeping what is running"
+          fi
+          sleep "$$INTERVAL"
+        done
+
+  # Optional: `docker compose --profile monitoring up -d`, then
+  # http://127.0.0.1:9090. Metrics are counts only, with no identifiers.
+  prometheus:
+    profiles: [monitoring]
+    image: docker.io/prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml:ro,z
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+
+volumes:
+  pgdata: {}
+  auth-secrets: {}
+  caddy-data: {}
+  prometheus-data: {}

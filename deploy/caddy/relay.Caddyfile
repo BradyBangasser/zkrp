@@ -1,0 +1,2 @@
+# A relay host: its own gRPC API and /healthz.
+import sites/relay.caddy

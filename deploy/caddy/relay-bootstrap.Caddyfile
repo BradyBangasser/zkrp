@@ -1,0 +1,3 @@
+# A relay that also answers for the shared bootstrap name.
+import sites/relay.caddy
+import sites/bootstrap.caddy

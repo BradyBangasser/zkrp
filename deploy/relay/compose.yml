@@ -1,0 +1,93 @@
+# A relay host: the relay and Caddy, from the images CI publishes on every
+# push to main. Needs no checkout of this repository: copy this file and the
+# two env files to the host. The updater keeps them current: every five
+# minutes it pulls, and restarts only what changed.
+#
+#   sudo mkdir -p /opt/zkrp-relay && cd /opt/zkrp-relay
+#   # copy this file here as compose.yml, plus relay.env and caddy.env
+#   # (from deploy/env/*.env.example) beside it, and fill them in
+#   docker login ghcr.io          # a token with read:packages, while the images are private
+#   docker compose up -d          # relay + caddy + updater
+#
+# An update restarts the relay: every connected client drops and reconnects
+# within seconds. To control when that happens, pin TAG=<commit sha> in
+# /opt/zkrp-relay/.env, or leave the updater out
+# (`docker compose up -d relay caddy`) and use deploy/systemd/zkrp-update@.timer
+# or update by hand.
+#
+# The updater drives the host's Docker through its socket, which is full
+# control of Docker on this machine.
+
+name: zkrp-relay
+
+services:
+  relay:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-relay:${TAG:-latest}
+    restart: unless-stopped
+    env_file: [relay.env]
+    # libp2p (TCP and QUIC) is public; gRPC (9001), metrics (9464) and
+    # /healthz (9466) stay on the compose network, reached through Caddy.
+    ports: ["9000:9000/tcp", "9000:9000/udp"]
+    expose: ["9001", "9464", "9466"]
+    volumes:
+      - relay-data:/data # the relay key: its peer id survives restarts
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-relay", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+    labels:
+      # For podman's own updater, which needs the container run as a Quadlet
+      # unit; with compose, the updater service or zkrp-update@.timer does it.
+      io.containers.autoupdate: registry
+
+  caddy:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-caddy:${TAG:-latest}
+    restart: unless-stopped
+    # RELAY_DOMAIN; for the shared bootstrap name also CADDY_ROLE=relay-bootstrap,
+    # BOOTSTRAP_DOMAIN and CLOUDFLARE_API_TOKEN.
+    env_file: [caddy.env]
+    ports: ["80:80", "443:443"]
+    volumes:
+      - caddy-data:/data # certificates, kept across restarts
+    depends_on: [relay]
+    labels:
+      io.containers.autoupdate: registry
+
+  # Pulls new images and recreates the services whose image changed. It never
+  # updates itself: its bind mounts name paths inside this container, which a
+  # recreate from in here would get wrong. Update it with
+  # `docker compose pull updater && docker compose up -d updater`.
+  updater:
+    image: docker.io/library/docker:29-cli
+    restart: unless-stopped
+    # On SELinux hosts (Fedora, RHEL) the socket and files below are
+    # otherwise unreadable here; Docker on this host is already in its hands.
+    security_opt: ["label=disable"]
+    environment:
+      INTERVAL: ${UPDATE_INTERVAL:-300}
+    volumes:
+      # The host's Docker (podman: DOCKER_SOCKET=/run/podman/podman.sock).
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      # The registry login from `docker login` (sudo: DOCKER_CONFIG=/root/.docker).
+      - ${DOCKER_CONFIG:-${HOME}/.docker}/config.json:/root/.docker/config.json:ro
+      # This project: compose.yml, .env, relay.env, caddy.env.
+      - ./:/project:ro
+    working_dir: /project
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          if docker compose pull --quiet relay caddy; then
+            docker compose up -d relay caddy
+            docker image prune -f >/dev/null
+          else
+            echo "pull failed; keeping what is running"
+          fi
+          sleep "$$INTERVAL"
+        done
+
+volumes:
+  relay-data: {}
+  caddy-data: {}

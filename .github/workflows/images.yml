@@ -1,0 +1,140 @@
+name: Docker
+
+# Only when something that goes into the images changes: the Rust workspace,
+# the Caddy configs (what .dockerignore lets into the build), and the build
+# files themselves. A push that touches only docs or deploy files builds
+# nothing, so the hosts' updaters see no new image and restart nothing (a
+# relay restart drops every connected client). Run it by hand
+# (Actions → Docker → Run workflow) to rebuild anyway. Tags (v*) always build.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "proto/**"
+      - "deploy/caddy/**"
+      - "Dockerfile"
+      - "docker-bake.hcl"
+      - ".dockerignore"
+      - ".github/workflows/images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # The three images (relay, auth, caddy) come from one Dockerfile whose
+  # `build` stage compiles both Rust binaries at once; one bake run shares
+  # that stage between them, so the workspace is compiled once per platform.
+  # Each platform builds natively on its own runner (no QEMU: emulated Rust
+  # compiles are several times slower) and pushes its images by digest; the
+  # `merge` job then tags each image's two digests as one multi-arch image.
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Names
+        id: names
+        run: |
+          echo "registry=ghcr.io/${OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "slug=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+          PLATFORM: ${{ matrix.platform }}
+
+      # Pushed by digest only (no tags yet); each platform keeps its own
+      # cache scope so the two jobs don't overwrite each other's.
+      - uses: docker/bake-action@v6
+        id: bake
+        env:
+          PLATFORMS: ${{ matrix.platform }}
+          GIT_SHA: ${{ github.sha }}
+        with:
+          source: .
+          files: docker-bake.hcl
+          set: |
+            relay.tags=${{ steps.names.outputs.registry }}/zkrp-relay
+            auth.tags=${{ steps.names.outputs.registry }}/zkrp-auth
+            caddy.tags=${{ steps.names.outputs.registry }}/zkrp-caddy
+            *.output=type=image,push-by-digest=true,name-canonical=true,push=true
+            *.cache-from=type=gha,scope=${{ steps.names.outputs.slug }}
+            *.cache-to=type=gha,scope=${{ steps.names.outputs.slug }},mode=max
+
+      - name: Record digests
+        run: |
+          for target in relay auth caddy; do
+            digest=$(jq -r --arg t "$target" '.[$t]["containerimage.digest"]' <<<"$METADATA")
+            test -n "$digest" && test "$digest" != null
+            mkdir -p "digests/$target"
+            touch "digests/$target/${digest#sha256:}"
+          done
+        env:
+          METADATA: ${{ steps.bake.outputs.metadata }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.names.outputs.slug }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Tags each image over both platforms: the commit SHA always, `latest` for
+  # main, and the version (0.2.0) for a v0.2.0 tag.
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the multi-arch images
+        run: |
+          registry="ghcr.io/${OWNER,,}"
+          for target in relay auth caddy; do
+            image="$registry/zkrp-$target"
+            tags=(-t "$image:$SHA")
+            [ "$REF" = refs/heads/main ] && tags+=(-t "$image:latest")
+            [ "$REF_TYPE" = tag ] && tags+=(-t "$image:${REF_NAME#v}")
+            sources=$(cd "digests/$target" && printf "$image@sha256:%s " *)
+            # shellcheck disable=SC2086
+            docker buildx imagetools create "${tags[@]}" $sources
+            docker buildx imagetools inspect "$image:$SHA"
+          done
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}

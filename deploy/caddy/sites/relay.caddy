@@ -1,0 +1,9 @@
+{$RELAY_DOMAIN:relay.localhost} {
+	# For DNS load-balancer health monitors.
+	handle /healthz {
+		reverse_proxy relay:9466
+	}
+	handle {
+		reverse_proxy h2c://relay:9001
+	}
+}

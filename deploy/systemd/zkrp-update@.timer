@@ -1,0 +1,13 @@
+# Check for new zkrp images every five minutes (CI publishes on every push
+# to main). Enable with, e.g.:  systemctl enable --now zkrp-update@zkrp-relay.timer
+[Unit]
+Description=Check for new zkrp images in /opt/%i every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

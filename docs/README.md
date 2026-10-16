@@ -7,6 +7,7 @@ mailboxes, with a gRPC control plane for discovery, health, and storage.
 - **Architecture** - the components and how they fit together.
 - **Services** - the service catalog.
 - **gRPC API reference** - full per-service reference, generated from the protos.
-- **Deployment** - Docker Compose, relay hosts, keys, and CI images.
+- **Deployment** - lives in [`../deploy/README.md`](../deploy/README.md):
+  the core host, relay hosts, the local stack, keys, and the images.
 - **Reliability** - the 99.9% SLO, the 99% SLA, and the Prometheus metrics that
   verify them.

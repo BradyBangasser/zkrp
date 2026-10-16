@@ -1,0 +1,146 @@
+# The whole zkrp system on one machine, for development (scripts/local-up.sh):
+# Postgres, SeaweedFS standing in for S3, auth, a relay, and Prometheus, built
+# from this checkout. Plaintext gRPC, no Caddy: point the app at
+# GRPC_ADDR=http://<LOCAL_IP>:9001 (its scheme setting).
+#
+#   scripts/local-up.sh          # first run makes keys; builds and starts
+#   scripts/local-up.sh --lan    # reachable from a phone on this network
+#   docker compose -f deploy/local/compose.yml logs -f relay auth
+#   docker compose -f deploy/local/compose.yml down      # stop (-v wipes data)
+#
+# Nothing here is for production: fixed passwords, throwaway keys, magic
+# links printed to auth's log instead of mailed.
+
+name: zkrp-local
+
+x-aws: &aws
+  AWS_REGION: us-east-2
+  # SeaweedFS accepts any credentials.
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+
+services:
+  # S3 for the relay's blobs, mailboxes and logs, on http://localhost:8333.
+  s3:
+    image: docker.io/chrislusf/seaweedfs:latest
+    command: server -dir=/data -s3 -s3.port=8333 -s3.domainName=s3
+    volumes:
+      - s3-data:/data
+    ports: ["127.0.0.1:8333:8333"]
+    networks:
+      default:
+        aliases:
+          # Bucket-in-hostname requests (what the AWS SDK sends): <bucket>.s3.
+          - zkrp-blobs.s3
+          - zkrp-logs.s3
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  # Makes the buckets, then exits.
+  s3-init:
+    image: docker.io/amazon/aws-cli:latest
+    depends_on:
+      s3:
+        condition: service_healthy
+    environment: *aws
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        for b in zkrp-blobs zkrp-logs; do
+        aws --endpoint-url http://s3:8333 s3api create-bucket --bucket $$b >/dev/null 2>&1 || true;
+        done; echo buckets ready
+
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: local
+      AUTH_DB_PASSWORD: local
+      RELAY_DB_PASSWORD: local
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../db/init:/docker-entrypoint-initdb.d:ro,z
+      - ../../db/auth.sql:/schema/auth.sql:ro,z
+      - ../../db/registry.sql:/schema/registry.sql:ro,z
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  auth:
+    build: { context: ../.., dockerfile: Dockerfile, target: auth }
+    image: zkrp-local/auth
+    environment:
+      <<: *aws
+      DATABASE_URL: postgres://auth:local@postgres/auth
+      ALLOWED_EMAIL_DOMAINS: ${LOCAL_EMAIL_DOMAINS:-example.edu}
+      # Links go to auth's log: `docker compose ... logs auth`.
+      MAILER: log
+      VERIFY_LINK_BASE: fratrat://verify
+      APP_ATTEST_APP_ID: ${APP_ATTEST_APP_ID:-WHN5849AD9.dev.bangasser.FratRat}
+      APP_ATTEST_ENV: development
+      EPOCH_SECS: ${EPOCH_SECS:-2592000}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - auth-secrets:/secrets
+    ports: ["${LOCAL_BIND:-127.0.0.1}:9002:9002"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-auth", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  relay:
+    build: { context: ../.., dockerfile: Dockerfile, target: relay }
+    image: zkrp-local/relay
+    environment:
+      <<: *aws
+      AWS_ENDPOINT_URL: http://s3:8333
+      BLOB_BUCKET: zkrp-blobs
+      LOG_BUCKET: zkrp-logs
+      CF_DOMAIN: ${LOCAL_IP:-127.0.0.1}:8333/zkrp-blobs
+      RELAY_PUBLIC_ADDRS: /ip4/${LOCAL_IP:-127.0.0.1}/tcp/9000
+      PUBLIC_GRPC_URL: http://${LOCAL_IP:-127.0.0.1}:9001
+      AUTH_URL: http://${LOCAL_IP:-127.0.0.1}:9002
+      REGION: local
+      RELAY_MESHES: fratrat-v1
+      DATABASE_URL: postgres://relay:local@postgres/registry
+      ISSUER_PUBLIC_KEY: ${ISSUER_PUBLIC_KEY:?run scripts/local-up.sh}
+      EPOCH_SECS: ${EPOCH_SECS:-2592000}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - relay-data:/data
+    ports:
+      - "9000:9000/tcp"
+      - "9000:9000/udp"
+      - "${LOCAL_BIND:-127.0.0.1}:9001:9001"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-relay", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.5.0
+    volumes:
+      - ../../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ../../monitoring/rules.yml:/etc/prometheus/rules.yml:ro,z
+    ports: ["127.0.0.1:9090:9090"]
+
+volumes:
+  s3-data: {}
+  pgdata: {}
+  auth-secrets: {}
+  relay-data: {}

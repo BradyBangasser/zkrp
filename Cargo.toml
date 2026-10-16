@@ -1,3 +1,46 @@
 [workspace]
-members = ["libghost", "controller", "auth", "zkcred", "telemetry"]
 resolver = "2"
+members = [
+  "crates/libghost",
+  "crates/relay",
+  "crates/auth",
+  "crates/zkcred",
+  "crates/telemetry",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/BradyBangasser/zkrp"
+
+# Shared versions. Crates add their own features on top (features are
+# additive), so a crate lists only what it needs beyond these.
+[workspace.dependencies]
+libghost = { path = "crates/libghost" }
+zkcred = { path = "crates/zkcred" }
+telemetry = { path = "crates/telemetry" }
+
+async-trait = "0.1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+dotenv = "0.15"
+futures = "0.3"
+hex = "0.4"
+libp2p = "0.56"
+prost = "0.14"
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
+thiserror = "2"
+tokio = { version = "1.35", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.14"
+tonic-prost = "0.14"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+zeroize = "1"
+
+protoc-bin-vendored = "3.3"
+tonic-prost-build = "0.14"

@@ -1,7 +1,7 @@
 target
 */target
 .env
-controller/Cargo.lock
-libghost/Cargo.lock
 secrets/
-deploy/sites.d/*.caddy
+deploy/env/*.env
+deploy/local/.env
+deploy/local/secrets/

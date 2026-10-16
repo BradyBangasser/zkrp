@@ -1,0 +1,13 @@
+[package]
+name = "telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Prometheus metrics for zkrp services. Counts only: no label ever holds a peer, address, or user."
+
+[dependencies]
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+tower = "0.5"
+http = "1"
+tracing.workspace = true

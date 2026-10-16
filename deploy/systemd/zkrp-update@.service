@@ -1,0 +1,21 @@
+# Pull the newest images and restart the containers whose image changed, for
+# the compose project in /opt/<instance>: zkrp-update@zkrp-relay for a relay
+# host (deploy/relay/compose.yml), zkrp-update@zkrp for the core host. Run by
+# zkrp-update@.timer; `systemctl start zkrp-update@zkrp-relay` runs it now.
+# Use this instead of the projects' updater service, not with it.
+#
+# Compose does the "only if changed" part: `pull` downloads only new layers,
+# and `up -d` recreates only containers whose image is newer.
+[Unit]
+Description=Update zkrp containers in /opt/%i to the newest images
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/%i
+# The updater service, if present, is left alone (it can't update itself
+# either); Postgres is pinned and upgraded deliberately.
+ExecStart=/bin/sh -c 'services=$$(docker compose config --services | grep -vx -e updater -e postgres -e prometheus); docker compose pull --quiet $$services && docker compose up -d $$services'
+# Drop the untagged images an update leaves behind.
+ExecStartPost=/usr/bin/docker image prune -f
