@@ -1,5 +1,4 @@
-use aws_sdk_s3::{self as s3, primitives::ByteStream};
-use chrono::prelude::*;
+use aws_sdk_s3 as s3;
 use ring::rand::SecureRandom;
 use std::pin::Pin;
 
@@ -21,30 +20,8 @@ pub struct BlobService {
 }
 
 impl BlobService {
-    pub async fn new(conf: RelayConfig) -> Self {
-        let config = aws_config::load_from_env().await;
-
-        let client = s3::Client::new(&config);
-        let now = Utc::now();
-
-        client
-            .put_object()
-            .bucket(&conf.blob_bucket)
-            .key(format!(
-                "logs/start/{}/{}/{}",
-                now.year(),
-                now.month(),
-                now.day0()
-            ))
-            .body(ByteStream::from_static("I started!".as_bytes()))
-            .content_type("text/plain")
-            .send()
-            .await
-            .expect("Failed to write log");
-        Self {
-            client,
-            config: conf,
-        }
+    pub fn new(client: s3::Client, config: RelayConfig) -> Self {
+        Self { client, config }
     }
 }
 
@@ -69,10 +46,19 @@ impl BlobStore for BlobService {
         let mut stream = request.into_inner();
         let mut data: Vec<u8> = Vec::new();
 
-        while let Some(chunk) = stream.message().await.unwrap() {
-            data.extend_from_slice(&chunk.data);
-            if data.len() > MAX_BLOB_BYTES {
-                return Err(Status::resource_exhausted("blob exceeds 10 MB limit"));
+        loop {
+            match stream.message().await {
+                Ok(Some(chunk)) => {
+                    data.extend_from_slice(&chunk.data);
+                    if data.len() > MAX_BLOB_BYTES {
+                        return Err(Status::resource_exhausted("blob exceeds 10 MB limit"));
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("blob upload stream aborted: {e}");
+                    return Err(Status::aborted("upload stream interrupted"));
+                }
             }
         }
 
@@ -82,10 +68,11 @@ impl BlobStore for BlobService {
 
         let mut id_buffer = [0u8; 32];
         let sr = ring::rand::SystemRandom::new();
-        sr.fill(&mut id_buffer).unwrap();
+        sr.fill(&mut id_buffer)
+            .map_err(|_| Status::internal("rng unavailable"))?;
         let blob_id = id_buffer.encode_hex::<String>();
         let blob = format!("blob/{}/{}", &blob_id[0..3], &blob_id[3..]);
-        tracing::info!("Inserting blob {}", blob);
+        tracing::debug!("Inserting blob {}", blob);
         self.client
             .put_object()
             .bucket(&self.config.blob_bucket)

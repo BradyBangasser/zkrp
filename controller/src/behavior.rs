@@ -13,6 +13,7 @@ pub struct RelayBehavior {
     pub identify: identify::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub autonat: autonat::Behaviour,
+    pub admit: libghost::admit::AdmitBehaviour,
 }
 
 impl RelayBehavior {
@@ -48,6 +49,7 @@ impl RelayBehavior {
             identify,
             kademlia,
             autonat,
+            admit: libghost::admit::relay_behaviour(),
         }
     }
 }

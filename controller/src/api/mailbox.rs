@@ -6,7 +6,7 @@
 
 use tonic::{Request, Response, Status};
 
-use libghost::mailbox::{MailboxStore, StoreError};
+use crate::mailbox_store::{MailboxStore, StoreError};
 
 pub mod proto {
     tonic::include_proto!("zrp.mailbox.v1");

@@ -2,8 +2,7 @@ use crate::{
     api::proto::{LogUploadResponse, UploadChunk, logging_server::Logging},
     config::RelayConfig,
 };
-use aws_sdk_s3::{self as s3, primitives::ByteStream};
-use chrono::prelude::*;
+use aws_sdk_s3 as s3;
 use hex::ToHex;
 use ring::rand::SecureRandom;
 use tonic::{Response, Status};
@@ -16,30 +15,8 @@ pub struct LogService {
 }
 
 impl LogService {
-    pub async fn new(conf: RelayConfig) -> Self {
-        let config = aws_config::load_from_env().await;
-
-        let client = s3::Client::new(&config);
-        let now = Utc::now();
-
-        client
-            .put_object()
-            .bucket(&conf.log_bucket)
-            .key(format!(
-                "logs/start/{}/{}/{}",
-                now.year(),
-                now.month(),
-                now.day0()
-            ))
-            .body(ByteStream::from_static("I started!".as_bytes()))
-            .content_type("text/plain")
-            .send()
-            .await
-            .expect("Failed to write log");
-        Self {
-            client,
-            config: conf,
-        }
+    pub fn new(client: s3::Client, config: RelayConfig) -> Self {
+        Self { client, config }
     }
 }
 
@@ -74,10 +51,11 @@ impl Logging for LogService {
 
         let mut id_buffer = [0u8; 32];
         let sr = ring::rand::SystemRandom::new();
-        sr.fill(&mut id_buffer).unwrap();
+        sr.fill(&mut id_buffer)
+            .map_err(|_| Status::internal("rng unavailable"))?;
         let blob_id = id_buffer.encode_hex::<String>();
         let blob = format!("log/{}/{}", &blob_id[0..3], &blob_id[3..]);
-        tracing::info!("Inserting log {}", blob);
+        tracing::debug!("Inserting log {}", blob);
         self.client
             .put_object()
             .bucket(&self.config.log_bucket)

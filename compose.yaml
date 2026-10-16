@@ -1,0 +1,147 @@
+# Full zkrp stack: Postgres, the auth (enrollment) service, and one relay.
+#
+#   cp .env.example .env                                 # fill in
+#   docker compose run --rm --no-deps --entrypoint /usr/local/bin/zkrp-auth \
+#     -v ./secrets:/out:z auth keygen /out               # once; prints ISSUER_PUBLIC_KEY
+#   docker compose up --build
+#
+# Bind mounts carry `z` so they work under SELinux (Fedora/RHEL); Docker
+# ignores it elsewhere.
+#
+# Production relays in other regions run only the relay image (see
+# controller/relay.service) and point DATABASE_URL at this Postgres.
+name: zkrp
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?set AUTH_DB_PASSWORD in .env}
+      RELAY_DB_PASSWORD: ${RELAY_DB_PASSWORD:?set RELAY_DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro,z
+      - ./db/auth.sql:/schema/auth.sql:ro,z
+      - ./db/registry.sql:/schema/registry.sql:ro,z
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  relay:
+    build:
+      context: .
+      dockerfile: controller/Containerfile
+    image: ${RELAY_IMAGE:-ghcr.io/bradybangasser/zkrp-relay:latest}
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?}
+      AWS_REGION: ${AWS_REGION:?}
+      BLOB_BUCKET: ${BLOB_BUCKET:?}
+      LOG_BUCKET: ${LOG_BUCKET:?}
+      CF_DOMAIN: ${CF_DOMAIN:?}
+      RELAY_MESHES: ${RELAY_MESHES:-zkrp}
+      REGION: ${REGION:-local}
+      # Required for reservations. Use the address clients dial, without /p2p.
+      RELAY_PUBLIC_ADDRS: ${RELAY_PUBLIC_ADDRS:-/ip4/127.0.0.1/tcp/9000}
+      DATABASE_URL: postgres://relay:${RELAY_DB_PASSWORD}@postgres/registry
+      ISSUER_PUBLIC_KEY: ${ISSUER_PUBLIC_KEY:?run keygen and set ISSUER_PUBLIC_KEY in .env}
+      # Handed to clients (ListRelays, GetNetworkConfig) so apps only ship a
+      # bootstrap host.
+      PUBLIC_GRPC_URL: https://${RELAY_DOMAIN:-relay.localhost}
+      AUTH_URL: https://${AUTH_DOMAIN:-auth.localhost}
+      EPOCH_SECS: ${EPOCH_SECS:-2592000}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "9000:9000/tcp"
+      - "9000:9000/udp"
+      # Plaintext gRPC on loopback only; the public way in is Caddy (TLS).
+      - "127.0.0.1:9001:9001/tcp"
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-relay", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+    # The registry is optional for a relay, so it starts without waiting.
+    depends_on:
+      postgres:
+        condition: service_started
+
+  auth:
+    build:
+      context: .
+      dockerfile: auth/Containerfile
+    image: ${AUTH_IMAGE:-ghcr.io/bradybangasser/zkrp-auth:latest}
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?}
+      AWS_REGION: ${AWS_REGION:?}
+      DATABASE_URL: postgres://auth:${AUTH_DB_PASSWORD}@postgres/auth
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:?}
+      MAILER: ${MAILER:-ses}
+      MAIL_FROM: ${MAIL_FROM:-}
+      VERIFY_LINK_BASE: ${VERIFY_LINK_BASE:?}
+      APP_ATTEST_APP_ID: ${APP_ATTEST_APP_ID:?}
+      APP_ATTEST_ENV: ${APP_ATTEST_ENV:-production}
+      NULLIFIER_KMS_KEY_ID: ${NULLIFIER_KMS_KEY_ID:-}
+      EPOCH_SECS: ${EPOCH_SECS:-2592000}
+      RUST_LOG: ${RUST_LOG:-info}
+    # Secrets are files at /run/secrets (CREDENTIALS_DIRECTORY), never env
+    # vars. A plain bind mount rather than compose `secrets:` so SELinux
+    # relabeling (`z`) applies.
+    volumes:
+      - ./secrets:/run/secrets:ro,z
+    ports:
+      - "127.0.0.1:9002:9002/tcp"
+    # Auth fails closed without its nullifier set, so wait for Postgres.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # TLS termination for the relay and auth gRPC APIs (see deploy/Caddyfile).
+  caddy:
+    # ghcr.io/bradybangasser/zkrp-caddy when serving BOOTSTRAP_DOMAIN (needs
+    # the Cloudflare DNS plugin; see deploy/sites.d/bootstrap.caddy.example).
+    image: ${CADDY_IMAGE:-docker.io/library/caddy:2.10}
+    restart: unless-stopped
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:-relay.localhost}
+      AUTH_DOMAIN: ${AUTH_DOMAIN:-auth.localhost}
+      BOOTSTRAP_DOMAIN: ${BOOTSTRAP_DOMAIN:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - ./deploy/sites.d:/etc/caddy/sites.d:ro,z
+      - caddy-data:/data
+    depends_on:
+      - relay
+      - auth
+
+  # Optional: `docker compose --profile monitoring up -d`, then
+  # http://localhost:9090. Metrics are counts only, with no identifiers.
+  prometheus:
+    profiles: [monitoring]
+    image: docker.io/prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml:ro,z
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+volumes:
+  caddy-data:
+  prometheus-data:
+  pgdata:
+  relay-data:

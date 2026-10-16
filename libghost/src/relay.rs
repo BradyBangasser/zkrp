@@ -7,7 +7,7 @@ pub mod proto {
 use proto::UploadChunk;
 use proto::logging_client::LoggingClient;
 use proto::relay_service_client::RelayServiceClient;
-use proto::{HealthResponse, RelayInfo, RelayListResponse};
+use proto::{HealthResponse, NetworkConfig, RelayInfo, RelayListResponse};
 
 #[derive(Clone)]
 pub struct RelayClient {
@@ -16,7 +16,7 @@ pub struct RelayClient {
 
 impl RelayClient {
     pub async fn connect(addr: &str) -> Result<Self, tonic::transport::Error> {
-        let inner = RelayServiceClient::connect(addr.to_string()).await?;
+        let inner = RelayServiceClient::new(crate::grpc::connect(addr).await?);
         Ok(Self { inner })
     }
 
@@ -24,6 +24,16 @@ impl RelayClient {
         let response: tonic::Response<RelayListResponse> =
             self.inner.list_relays(tonic::Request::new(())).await?;
         Ok(response.into_inner().relays)
+    }
+
+    /// Auth URL, CDN domain, and epoch length, as configured on the relay.
+    pub async fn network_config(&mut self) -> Result<NetworkConfig, tonic::Status> {
+        Ok(self.inner.get_network_config(tonic::Request::new(())).await?.into_inner())
+    }
+
+    /// The relay's libp2p peer id, which gRPC admissions are bound to.
+    pub async fn peer_id(&mut self) -> Result<String, tonic::Status> {
+        Ok(self.inner.health(tonic::Request::new(())).await?.into_inner().peer_id)
     }
 
     pub async fn health(&mut self) -> Result<bool, tonic::Status> {
@@ -35,10 +45,9 @@ impl RelayClient {
     pub async fn upload_debug_log(
         grpc_addr: &str,
         data: Vec<u8>,
+        store: &dyn crate::store::GhostStore,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let channel = tonic::transport::Channel::from_shared(grpc_addr.to_string())?
-            .connect()
-            .await?;
+        let channel = crate::grpc::connect(grpc_addr).await?;
         let mut client = LoggingClient::new(channel);
 
         let chunks: Vec<UploadChunk> = data
@@ -46,10 +55,10 @@ impl RelayClient {
             .map(|c| UploadChunk { data: c.to_vec() })
             .collect();
 
-        let resp = client
-            .upload_debug_log(tokio_stream::iter(chunks))
-            .await?
-            .into_inner();
+        let mut request = tonic::Request::new(tokio_stream::iter(chunks));
+        crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_LOGGING)
+            .await;
+        let resp = client.upload_debug_log(request).await?.into_inner();
         Ok(resp.log_id)
     }
 }

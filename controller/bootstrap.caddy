@@ -1,0 +1,18 @@
+# Serve this relay as one of the targets of the shared bootstrap name.
+#
+# Enable: copy to /etc/zkrp/caddy.d/bootstrap.caddy, set BOOTSTRAP_DOMAIN in
+# /etc/system.env, run the zkrp-caddy image (CADDY_IMAGE), and provide a
+# Cloudflare API token (Zone:DNS:Edit for the zone) as the cloudflare-token
+# credential. Every relay gets its own certificate through DNS-01, so it
+# doesn't matter which relay Let's Encrypt's validators would have reached.
+{$BOOTSTRAP_DOMAIN} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:9466
+	}
+	handle {
+		reverse_proxy h2c://127.0.0.1:9001
+	}
+}

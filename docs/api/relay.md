@@ -3,8 +3,11 @@
 `package zrp.relay.v1`
 
 Discovery, health, and lifecycle for the P2P relays. A client uses `ListRelays`
-to find relays to connect to; relays call `Register`/`Deregister` to join and
-leave; operators use `Health`, `Stats`, and `WatchStats` to observe them.
+to find relays to connect to; operators use `Health`, `Stats`, and `WatchStats`
+to observe them. `Register`/`Deregister` return `PERMISSION_DENIED`: relays join
+the shared registry by writing to Postgres directly, because an open RPC would
+let anyone add a relay to every client's list. No method here requires an
+admission.
 
 ## Methods
 

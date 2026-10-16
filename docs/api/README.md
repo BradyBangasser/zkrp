@@ -4,7 +4,7 @@ zkRP exposes several gRPC services. They fall into two deployments:
 
 | Service | Package | Deployment | Default port |
 | --- | --- | --- | --- |
-| `AuthService` | `zrp.auth.v1` | auth service | `PORT` (Fly service, 9000) |
+| `AuthService` | `zrp.auth.v1` | auth service | `AUTH_PORT` (9002) |
 | `RelayService` | `zrp.relay.v1` | controller | `GRPC_PORT` (9001) |
 | `BlobStore` | `zrp.relay.v1` | controller | `GRPC_PORT` (9001) |
 | `Logging` | `zrp.relay.v1` | controller | `GRPC_PORT` (9001) |
@@ -12,13 +12,15 @@ zkRP exposes several gRPC services. They fall into two deployments:
 
 ## Transport
 
-- gRPC over HTTP/2. The tonic servers speak h2c; transport security is handled at
-  the deployment edge (Fly).
+- gRPC over HTTP/2. The tonic servers speak h2c on loopback or a private
+  network; Caddy terminates TLS in front of them (see the deployment guide).
+  Clients use `https://` URLs.
 - No server reflection is enabled, so clients need the `.proto` files (under
   `proto/`) to generate stubs.
-- No transport-level auth interceptor. Authorization is application-level: the
-  `AuthService` issues anonymous credentials, and access to a mailbox is gated by
-  possession of its capability id rather than by a bearer token on the wire.
+- `BlobStore`, `Logging` and `MailboxService` require an anonymous admission
+  (a zero-knowledge proof of an `AuthService` credential) in the
+  `x-zkrp-admit-bin` metadata. `RelayService` and `AuthService` are open.
+  Mailbox access is additionally gated by knowing the mailbox's capability id.
 
 ## Method paths
 

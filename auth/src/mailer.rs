@@ -66,3 +66,17 @@ impl Mailer for SesMailer {
         Ok(())
     }
 }
+
+/// Development mailer: logs the magic link instead of sending it. The
+/// recipient address is never logged.
+pub struct LogMailer {
+    pub link_base: String,
+}
+
+#[async_trait::async_trait]
+impl Mailer for LogMailer {
+    async fn send_link(&self, _to: &str, token_b64: &str) -> Result<(), anyhow::Error> {
+        tracing::warn!("MAILER=log, magic link: {}#{}", self.link_base, token_b64);
+        Ok(())
+    }
+}

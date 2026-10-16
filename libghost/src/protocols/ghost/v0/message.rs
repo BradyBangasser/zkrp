@@ -41,7 +41,14 @@ pub struct XRFMessage {
     pub codec: u16,
     pub nonce: [u8; 12],
     pub x3dh_init: Option<X3DHInit>,
+    /// Account signature over the message (see `crate::signed`).
     pub signature: Vec<u8>,
+    /// The author's account public key (libp2p protobuf encoding). Not the
+    /// transport key: that one rotates every launch.
+    pub sender: Vec<u8>,
+    /// Unix seconds at signing; bounds how long a captured message can be
+    /// replayed.
+    pub ts: u64,
 }
 
 impl XRFMessage {
@@ -60,6 +67,8 @@ impl XRFMessage {
             nonce,
             x3dh_init: None,
             signature: Vec::new(),
+            sender: Vec::new(),
+            ts: 0,
         })
     }
 }

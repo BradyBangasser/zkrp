@@ -1,0 +1,22 @@
+# TLS in front of the compose stack. Caddy gets and renews Let's Encrypt
+# certificates for both names (ports 80 and 443 must be reachable), and speaks
+# plaintext HTTP/2 (h2c) to the services on the internal network only.
+#
+# *.localhost names (the defaults) get certificates from Caddy's local CA,
+# which clients won't trust: use the published 127.0.0.1 ports for local work.
+{$RELAY_DOMAIN:relay.localhost} {
+	# For DNS load-balancer health monitors.
+	handle /healthz {
+		reverse_proxy relay:9466
+	}
+	handle {
+		reverse_proxy h2c://relay:9001
+	}
+}
+
+{$AUTH_DOMAIN:auth.localhost} {
+	reverse_proxy h2c://auth:9002
+}
+
+# Optional extra names (copy sites.d/bootstrap.caddy.example to enable).
+import /etc/caddy/sites.d/*.caddy

@@ -27,7 +27,9 @@ pub enum MeshEvent {
 pub trait MeshBehaviour: NetworkBehaviour {
     fn on_relay_accepted(&mut self, _relay_peer_id: PeerId, _relay_addr: Multiaddr) {}
     fn translate_event(event: &Self::ToSwarm) -> Option<MeshEvent>;
-    fn extract_gossip(_event: &Self::ToSwarm) -> Option<(String, Vec<u8>, PeerId)> {
+    /// (topic, data, propagation source, author). The author is the transport
+    /// peer that published it, when the message is signed at the libp2p layer.
+    fn extract_gossip(_event: &Self::ToSwarm) -> Option<(String, Vec<u8>, PeerId, Option<PeerId>)> {
         None
     }
     fn publish(
@@ -42,4 +44,7 @@ pub trait MeshBehaviour: NetworkBehaviour {
     ) -> Result<(), Box<dyn std::error::Error>>;
     fn on_identify_received(&mut self, _peer_id: PeerId, _listen_addrs: Vec<Multiaddr>) {}
     fn kademlia_get_closest(&mut self, _key: PeerId) {}
+    /// Send a zkrp admission to a relay (see `crate::admit`). Behaviours that
+    /// don't speak `/zkrp/admit/1` ignore it.
+    fn send_admission(&mut self, _relay: PeerId, _admission: Vec<u8>) {}
 }

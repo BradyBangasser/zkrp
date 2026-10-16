@@ -12,6 +12,7 @@ pub struct ClientBehavior {
     pub autonat: autonat::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
+    pub admit: crate::admit::AdmitBehaviour,
 }
 
 impl ClientBehavior {
@@ -69,6 +70,7 @@ impl ClientBehavior {
             identify,
             dcutr: dcutr::Behaviour::new(peer_id),
             autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
+            admit: crate::admit::client_behaviour(),
         }
     }
 }
@@ -80,8 +82,34 @@ impl MeshBehaviour for ClientBehavior {
         let _ = self.kademlia.bootstrap();
     }
 
+    fn send_admission(&mut self, relay: PeerId, admission: Vec<u8>) {
+        self.admit.send_request(&relay, admission);
+    }
+
     fn translate_event(event: &ClientBehaviorEvent) -> Option<MeshEvent> {
         match event {
+            ClientBehaviorEvent::Admit(libp2p::request_response::Event::Message {
+                peer,
+                message: libp2p::request_response::Message::Response { response, .. },
+                ..
+            }) => {
+                match response {
+                    crate::admit::AdmitResponse::Admitted => info!("admitted by relay {peer}"),
+                    crate::admit::AdmitResponse::Denied => {
+                        tracing::warn!("relay {peer} refused our credential; re-enroll")
+                    }
+                }
+                None
+            }
+            ClientBehaviorEvent::Admit(libp2p::request_response::Event::OutboundFailure {
+                peer,
+                error,
+                ..
+            }) => {
+                tracing::warn!("admission to {peer} failed: {error}");
+                None
+            }
+
             ClientBehaviorEvent::Kademlia(kad::Event::RoutingUpdated {
                 peer, addresses, ..
             }) => addresses
@@ -121,7 +149,9 @@ impl MeshBehaviour for ClientBehavior {
         }
     }
 
-    fn extract_gossip(event: &ClientBehaviorEvent) -> Option<(String, Vec<u8>, PeerId)> {
+    fn extract_gossip(
+        event: &ClientBehaviorEvent,
+    ) -> Option<(String, Vec<u8>, PeerId, Option<PeerId>)> {
         match event {
             ClientBehaviorEvent::Gossipsub(gossipsub::Event::Message {
                 message,
@@ -131,6 +161,7 @@ impl MeshBehaviour for ClientBehavior {
                 message.topic.clone().into_string(),
                 message.data.clone(),
                 *propagation_source,
+                message.source,
             )),
             _ => None,
         }

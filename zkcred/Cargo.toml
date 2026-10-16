@@ -1,0 +1,23 @@
+[package]
+name = "zkcred"
+version = "0.1.0"
+edition = "2024"
+description = "Anonymous BBS credentials for zkrp: blind issuance and unlinkable presentations"
+
+[dependencies]
+# bbs_plus 0.25 is built on arkworks 0.4. Every ark-* crate here must stay on
+# 0.4 or the curve types stop unifying.
+bbs_plus = { version = "0.25", default-features = false, features = ["std"] }
+schnorr_pok = { version = "0.23", default-features = false, features = ["std"] }
+dock_crypto_utils = { version = "0.23", default-features = false, features = ["std"] }
+ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"] }
+ark-ec = { version = "0.4", default-features = false }
+ark-ff = { version = "0.4", default-features = false }
+ark-serialize = { version = "0.4", default-features = false, features = ["std"] }
+ark-std = { version = "0.4", default-features = false, features = ["std"] }
+blake2 = "0.10"
+sha2 = "0.10"
+zeroize = "1"
+# Same rand as ark-std 0.4; enables OsRng behind `zkcred::rand`.
+rand = { version = "0.8", default-features = false, features = ["std", "getrandom"] }
+thiserror = "2"

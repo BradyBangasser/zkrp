@@ -11,6 +11,9 @@ message RelayInfo {
   uint32 load                   = 5;
   uint64 registered_at          = 6;
   uint32 port                   = 7;
+  // Public gRPC endpoint (https://...). Empty for relays that don't publish
+  // one; clients then only use them for libp2p.
+  string grpc_url               = 8;
 }
 
 message RelayListResponse {
@@ -51,6 +54,16 @@ message StatsResponse {
   uint64 snapshot_interval_secs = 3;
 }
 
+// Everything a client needs beyond a first relay, so apps ship with only a
+// bootstrap host list. Served by every relay from its own configuration.
+message NetworkConfig {
+  string auth_url               = 1;  // enrollment service, https://...
+  string blob_cdn_domain        = 2;  // where uploaded blobs are served
+  uint64 epoch_secs             = 3;  // credential epoch length
+  repeated string meshes        = 4;
+  uint64 refresh_after_secs     = 5;
+}
+
 message RegisterRequest {
   RelayInfo info                = 1;
 }
@@ -65,6 +78,8 @@ message WatchStatsRequest {
 
 service RelayService {
   rpc ListRelays(google.protobuf.Empty)     returns (RelayListResponse);
+
+  rpc GetNetworkConfig(google.protobuf.Empty) returns (NetworkConfig);
 
   rpc Health(google.protobuf.Empty)         returns (HealthResponse);
 

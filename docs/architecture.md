@@ -6,12 +6,37 @@ that knows who is talking to whom.
 
 ## Anonymous enrollment
 
-The `auth` service issues blind credentials. A client proves an email is eligible
-and receives a credential the server cannot link back to it. The server persists
-only 32-byte nullifiers ("has this address enrolled?"), never an email, peer id,
-or issued credential. Enrollment is stateless: state that would live server-side
-is carried by the client in an opaque, MAC'd token. See AuthService in the API
-reference.
+The `auth` service issues anonymous credentials (`zkcred`: BBS signatures on
+BLS12-381). Enrollment is a magic link plus an Apple App Attest attestation:
+
+1. `GetChallenge(email)` emails a link carrying an encrypted token (expiry,
+   challenge, email) and returns the challenge to the app.
+2. The app commits to a fresh random *link secret* and attests over
+   `SHA-256("zkrp/attest/v1" || challenge || SHA-256(credential_request))`.
+3. `Redeem` verifies the attestation, records one nullifier, and blind-signs
+   `[link_secret, epoch]`. The issuer never sees the link secret.
+
+The server persists only nullifiers: `HMAC(pepper, epoch || slot || email)`,
+with the pepper in KMS. There are 3 slots per address per epoch (reinstall, second
+device). No email, key id, peer id, credential, or timestamp is ever stored,
+and attestations are verified statelessly, so no device key id is kept either.
+
+## Admission
+
+Relays accept only credential holders, without learning anything else. A client
+presents a zero-knowledge proof of its credential that reveals only the epoch,
+bound to the relay's peer id, a fresh nonce, and a timestamp:
+
+- **libp2p**: one `/zkrp/admit/1` request right after connecting. Peers not
+  admitted within 10 seconds are disconnected.
+- **gRPC**: `BlobStore`, `Logging` and `MailboxService` calls carry the proof in
+  `x-zkrp-admit-bin`. `RelayService` stays open for discovery.
+
+Proofs are freshly randomized, so a relay cannot link two connections to the
+same credential, or a connection to an enrollment. Relays verify offline against
+the published issuer public key, which also stops the issuer from tagging users
+with per-user keys. Abuse is bounded per connection and by epoch length, never
+by identity.
 
 ## Encrypted P2P substrate
 
@@ -20,15 +45,39 @@ circuit relay for reachability). `libghost` wraps this, and messages ride inside
 a `GhostEnvelope` (version, time nonce, opaque payload). Payloads are encrypted
 end to end; relays route without reading them.
 
+## Account and transport identity
+
+Each device has two keys. The **account** key is long-term: it is the identity
+applications see (profiles, DM topics, end-to-end encryption), and it signs
+every mesh message together with its topic and a timestamp. The **transport**
+key is the libp2p identity, generated fresh on every launch.
+
+Relays see only transport peer ids and IP addresses, never message contents, so
+they can't link one session to the next or a peer id to a profile, even for an
+operator who also enrolls an account and reads profiles off the mesh.
+Receivers attribute each message to the account that signed it, not to the
+gossipsub neighbour that forwarded it, and drop unsigned, forged, or stale
+(more than 10 minutes off) messages. A signed hello on `ghost/hello` tells
+newly connected peers which account is behind a connection.
+
+IP addresses remain visible to relays, and a stable home IP links sessions on
+its own. Hiding that needs a mixnet or Tor in front of the relays.
+
 ## Control plane
 
 The `controller` runs a relay node and a gRPC control plane (`RelayService`,
 `BlobStore`, `Logging`, `MailboxService`). This is how clients discover relays,
 observe health and stats, move blobs, and use store-and-forward mailboxes.
 
+Relays keep a stable identity on disk, so their `/p2p/` addresses survive
+restarts. With `DATABASE_URL` set, each relay heartbeats into a shared Postgres
+registry and `ListRelays` returns every live relay. The registry is served from
+memory, so a database outage degrades discovery to "this relay only" instead of
+failing it.
+
 ## Store-and-forward
 
 Because gossipsub is ephemeral, a message for an offline recipient is stored as
 an opaque, end-to-end-encrypted blob under a rotating, capability-style
-`mailbox_id` and fetched on reconnect. The relay stores only mailbox id to device
-tokens, in memory and TTL'd, with no link to identity.
+`mailbox_id` and fetched on reconnect. The relay stores only ciphertext keyed by
+mailbox id, in S3 under a lifecycle rule, with no link to identity.

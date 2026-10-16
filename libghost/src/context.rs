@@ -58,45 +58,12 @@ impl From<&PendingMessage> for OutboxEntry {
     }
 }
 
-async fn maybe_upload_debug_logs(
-    endpoint: &Option<String>,
-    last_upload: &mut Option<tokio::time::Instant>,
-) {
-    const MIN_INTERVAL: Duration = Duration::from_secs(30);
-    let Some(endpoint) = endpoint.clone() else {
-        return;
-    };
-    let now = tokio::time::Instant::now();
-    if let Some(prev) = *last_upload
-        && now.duration_since(prev) < MIN_INTERVAL
-    {
-        return;
-    }
-    *last_upload = Some(now);
-    let Some(buffer) = crate::debug::global_buffer() else {
-        return;
-    };
-    let data = buffer.snapshot();
-    if data.is_empty() {
-        return;
-    }
-    tokio::spawn(async move {
-        match crate::debug::upload(&endpoint, data).await {
-            Ok(resp) => {
-                tracing::info!("Uploaded debug log: id={}", resp.log_id,)
-            }
-            Err(e) => tracing::warn!("Debug log upload failed: {}", e),
-        }
-    });
-}
-
 async fn swarm_task<B>(
     mut swarm: libp2p::Swarm<B>,
     relay_addrs: Vec<String>,
     transport_config: crate::transport::TransportConfig,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
     raw_tx: mpsc::Sender<RawEvent>,
-    debug_log_endpoint: Option<String>,
     store: Arc<dyn GhostStore>,
 ) where
     B: crate::traits::MeshBehaviour + Send + 'static,
@@ -154,7 +121,6 @@ async fn swarm_task<B>(
     let mut ever_reserved = false;
     let mut last_roam_redial = tokio::time::Instant::now() - Duration::from_secs(10);
 
-    let mut last_debug_upload: Option<tokio::time::Instant> = None;
 
     let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
     let mut outbox: Vec<PendingMessage> = store
@@ -324,8 +290,8 @@ async fn swarm_task<B>(
                             }
                         }
 
-                        if let Some((topic, bytes, propagation_src)) = B::extract_gossip(&b_event) {
-                            let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src }).await;
+                        if let Some((topic, bytes, propagation_src, author)) = B::extract_gossip(&b_event) {
+                            let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src, author }).await;
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
@@ -357,11 +323,9 @@ async fn swarm_task<B>(
 
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         tracing::warn!("Outgoing connection error (peer={:?}): {}", peer_id, error);
-                        maybe_upload_debug_logs(&debug_log_endpoint, &mut last_debug_upload).await;
                     }
                     SwarmEvent::IncomingConnectionError { error, .. } => {
                         tracing::warn!("Incoming connection error: {}", error);
-                        maybe_upload_debug_logs(&debug_log_endpoint, &mut last_debug_upload).await;
                     }
 
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
@@ -372,6 +336,15 @@ async fn swarm_task<B>(
 
                         // If this was a relay we'd lost, stop trying to re-dial it.
                         relays_to_redial.remove(&peer_id);
+
+                        // Prove to the relay we hold a credential. Relays drop
+                        // connections that aren't admitted within a few seconds.
+                        if relay_peer_ids.contains(&peer_id) {
+                            match crate::admit::p2p_admission(store.as_ref(), &peer_id, &local_peer_id) {
+                                Some(admission) => swarm.behaviour_mut().send_admission(peer_id, admission),
+                                None => tracing::warn!("no credential; relay {peer_id} will drop us. Enroll first."),
+                            }
+                        }
 
                         let _ = raw_tx.send(RawEvent::PeerDiscovered { peer_id, addr }).await;
 
@@ -591,14 +564,22 @@ async fn crypto_task(
     codecs: Arc<Mutex<HashMap<u16, Codec>>>,
     store: Arc<dyn GhostStore>,
     blob_manager: Arc<BlobManager>,
+    account: libp2p::identity::Keypair,
 ) {
     let kb = load_key_bundle(&store).await;
+
+    // Transport peer -> the account it has proven (by signing) it speaks for,
+    // and how many live transports each account has. Apps only ever see
+    // account ids in PeerConnected / PeerDisconnected / Message.
+    let mut accounts: HashMap<PeerId, PeerId> = HashMap::new();
+    let mut present: HashMap<PeerId, usize> = HashMap::new();
+    let mut transport_addrs: HashMap<PeerId, Multiaddr> = HashMap::new();
 
     loop {
         tokio::select! {
         Some(event) = raw_rx.recv() => {
             match event {
-                RawEvent::GossipMessage { bytes, propagation_src, topic } => {
+                RawEvent::GossipMessage { bytes, propagation_src, author, topic } => {
 
                     // Decode envelope
                     let envelope = match GhostEnvelope::decode(bytes.as_ref()) {
@@ -618,9 +599,38 @@ async fn crypto_task(
                         }
                     };
 
-                    let peer_id_str = propagation_src.to_string();
+                    // Attribute to the signing account, never to the forwarder.
+                    let sender = match crate::signed::verify(&topic, &msg, crate::admit::now_unix()) {
+                        Ok(account) => account,
+                        Err(e) => {
+                            tracing::debug!("dropping message on {topic}: {e}");
+                            continue;
+                        }
+                    };
+
+                    if let Some(transport) = author
+                        && accounts.insert(transport, sender).is_none()
+                    {
+                        let n = present.entry(sender).or_insert(0);
+                        *n += 1;
+                        if *n == 1 {
+                            blob_manager.on_peer_connected(sender.to_string()).await;
+                            let addr = transport_addrs.get(&transport).cloned().unwrap_or_else(Multiaddr::empty);
+                            let e = Arc::new(ZRPEvent::PeerConnected { peer_id: sender, addr });
+                            for handler in handlers.lock().await.values() {
+                                let h = handler.clone();
+                                let e = e.clone();
+                                let tx = crypto_tx.clone();
+                                tokio::spawn(async move { h.handle(&e, tx) });
+                            }
+                        }
+                    }
+
+                    let peer_id_str = sender.to_string();
 
                     match msg.codec {
+                        codec::CONTENT_TYPE_HELLO => continue,
+
 
                         codec::CONTENT_TYPE_CHUNK_STORE => {
                             if let Ok(req) = postcard::from_bytes::<ChunkStoreRequest>(&msg.payload) {
@@ -653,9 +663,13 @@ async fn crypto_task(
                         _ => {}
                     }
 
+                    if msg.codec >= codec::RESERVED_CONTENT_TYPES {
+                        continue;
+                    }
+
                     let e = ZRPEvent::Message {
                         conversation: topic,
-                        peer_id: propagation_src,
+                        peer_id: sender,
                         content_type: msg.codec,
                         payload: msg.payload.clone(),
                     };
@@ -670,24 +684,44 @@ async fn crypto_task(
                 }
 
                 RawEvent::PeerDiscovered { peer_id, addr } => {
-                    // Notify blob manager of new peer
-                    blob_manager.on_peer_connected(peer_id.to_string()).await;
-
-                    let e = Arc::new(ZRPEvent::PeerConnected { peer_id, addr });
-                    for handler in handlers.lock().await.values() {
-                        let h = handler.clone();
-                        let e = e.clone();
-                        let tx = crypto_tx.clone();
-                        tokio::spawn(async move { h.handle(&e, tx) });
-                    }
+                    // A new transport connection says nothing about who is on
+                    // the other end. Announce our account; theirs arrives the
+                    // same way, and PeerConnected fires once it verifies. The
+                    // second hello covers a subscription exchange that hadn't
+                    // finished by the first.
+                    transport_addrs.insert(peer_id, addr);
+                    let tx = crypto_tx.clone();
+                    tokio::spawn(async move {
+                        for delay in [2, 6] {
+                            tokio::time::sleep(Duration::from_secs(delay)).await;
+                            let _ = tx
+                                .send(SwarmCommand::Publish {
+                                    topic: crate::signed::HELLO_TOPIC.to_string(),
+                                    payload: Vec::new(),
+                                    content_type: codec::CONTENT_TYPE_HELLO,
+                                })
+                                .await;
+                        }
+                    });
                 }
 
                 RawEvent::PeerLost { peer_id } => {
-                    // Notify blob manager peer is gone
-                    blob_manager.on_peer_disconnected(&peer_id.to_string()).await;
+                    transport_addrs.remove(&peer_id);
+                    let Some(account) = accounts.remove(&peer_id) else {
+                        continue;
+                    };
+                    let remaining = present.get_mut(&account).map(|n| {
+                        *n = n.saturating_sub(1);
+                        *n
+                    });
+                    if remaining != Some(0) {
+                        continue;
+                    }
+                    present.remove(&account);
+                    blob_manager.on_peer_disconnected(&account.to_string()).await;
 
                     let e = Arc::new(ZRPEvent::PeerDisconnected {
-                        peer_id,
+                        peer_id: account,
                         reason: DisconnectReason::Clean,
                     });
                     for handler in handlers.lock().await.values() {
@@ -746,7 +780,8 @@ async fn crypto_task(
                             content_type
                         );
 
-                        if let Ok(message) = GhostMessage::new(&kb, content_type, &payload) {
+                        if let Ok(mut message) = GhostMessage::new(&kb, content_type, &payload) {
+                            crate::signed::sign(&account, &topic, &mut message, crate::admit::now_unix());
                             let payload = postcard::to_allocvec(&message).unwrap();
                             let envelope = encode(&payload);
                             let mut encoded = Vec::new();
@@ -791,6 +826,9 @@ pub enum SwarmCommand {
 pub(crate) enum RawEvent {
     GossipMessage {
         propagation_src: libp2p::PeerId,
+        /// The transport peer that published it (gossipsub `source`), as
+        /// opposed to the neighbour that forwarded it.
+        author: Option<libp2p::PeerId>,
         topic: String,
         bytes: Vec<u8>,
     },
@@ -815,6 +853,7 @@ pub struct ZRPHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
     blob_manager: Option<Arc<BlobManager>>,
     debug_log_endpoint: Option<String>,
+    store: Arc<dyn GhostStore>,
 }
 
 impl ZRPHandle {
@@ -907,7 +946,7 @@ impl ZRPHandle {
         let data = crate::debug::global_buffer()
             .map(|b| b.snapshot())
             .unwrap_or_default();
-        let resp = crate::debug::upload(endpoint, data).await?;
+        let resp = crate::debug::upload(endpoint, data, self.store.as_ref()).await?;
         Ok(resp.log_id)
     }
 }
@@ -975,12 +1014,19 @@ impl ZRPContext {
         }
 
         if relays.is_empty() {
-            match ZRPHandle::discover_relays("http://relay.a.central.us.infra.zkrp.net:9001").await
-            {
-                Ok(mut relay) => relays.append(&mut relay),
-                Err(e) => tracing::info!("Failed to discover relays: {}", e),
-            }
+            tracing::warn!("no relays given or discovered; only direct peers are reachable");
         }
+
+        // `identity` is the long-term account. The swarm gets a fresh
+        // transport identity every launch, so the peer id relays see changes
+        // each session and never matches the account apps exchange.
+        let account = identity.keypair.clone();
+        let transport = crate::identity::NodeIdentity::generate();
+        tracing::info!(
+            "account {} using fresh transport identity {}",
+            identity.peer_id_string(),
+            transport.peer_id_string()
+        );
 
         let (crypto_tx, crypto_rx) = mpsc::channel::<SwarmCommand>(32);
         let (swarm_tx, swarm_rx) = mpsc::channel::<SwarmCommand>(32);
@@ -990,6 +1036,7 @@ impl ZRPContext {
             cmd_tx: crypto_tx.clone(),
             blob_manager: None,
             debug_log_endpoint: debug_log_endpoint.clone(),
+            store: Arc::clone(&self.store),
         };
 
         let blob_manager = Arc::new(BlobManager::new(
@@ -998,7 +1045,7 @@ impl ZRPContext {
             identity.peer_id_string(),
         ));
 
-        let swarm = libp2p::SwarmBuilder::with_existing_identity(identity.keypair)
+        let swarm = libp2p::SwarmBuilder::with_existing_identity(transport.keypair)
             .with_tokio()
             .with_tcp(
                 libp2p::tcp::Config::default(),
@@ -1020,7 +1067,6 @@ impl ZRPContext {
             transport_config,
             swarm_rx,
             raw_tx,
-            debug_log_endpoint.clone(),
             Arc::clone(&self.store),
         ));
 
@@ -1035,12 +1081,20 @@ impl ZRPContext {
             codecs,
             Arc::clone(&self.store),
             Arc::clone(&blob_manager),
+            account,
         ));
+
+        let _ = crypto_tx
+            .send(SwarmCommand::Subscribe {
+                topic: crate::signed::HELLO_TOPIC.to_string(),
+            })
+            .await;
 
         Ok(ZRPHandle {
             cmd_tx: crypto_tx,
             blob_manager: Some(blob_manager),
             debug_log_endpoint,
+            store: Arc::clone(&self.store),
         })
     }
 

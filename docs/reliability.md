@@ -10,17 +10,37 @@
 
 ## How it is measured
 
-Each service exports metrics to Prometheus, so availability and error rate are
-measured from real request outcomes rather than asserted. A typical success-rate
-query over the request and error counters:
+The relay and auth serve Prometheus metrics (`METRICS_ADDR`, default `:9464`
+for the relay and `:9465` for auth). Every label comes from a fixed set, and no
+metric carries a peer id, address, mailbox id, or email.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `zkrp_grpc_requests_total` | counter | `service`, `method`, `code` |
+| `zkrp_grpc_request_duration_seconds` | histogram | `service`, `method` |
+| `zkrp_admissions_total` | counter | `transport` (`p2p`, `grpc`), `result` |
+| `zkrp_peers_dropped_unadmitted_total` | counter | |
+| `zkrp_connected_peers`, `zkrp_active_reservations`, `zkrp_active_circuits` | gauge | |
+| `zkrp_relay_health_status` | gauge | 0 healthy, 1 degraded, 2 unhealthy |
+| `zkrp_registry_healthy`, `zkrp_uptime_seconds` | gauge | |
+| `zkrp_auth_links_total`, `zkrp_auth_enrollments_total` | counter | `result` |
+
+A request counts against the SLO only when the server is at fault (`UNKNOWN`,
+`INTERNAL`, `UNAVAILABLE`, `DATA_LOSS`, `DEADLINE_EXCEEDED`). Caller errors such
+as `UNAUTHENTICATED` don't spend the budget. Availability over the window:
 
 ```
-sum(rate(requests_total{status!~"5.."}[30d]))
-  / sum(rate(requests_total[30d]))
+1 - sum(increase(zkrp_grpc_requests_total{code=~"UNKNOWN|INTERNAL|UNAVAILABLE|DATA_LOSS|DEADLINE_EXCEEDED"}[30d]))
+  / sum(increase(zkrp_grpc_requests_total[30d]))
 ```
 
-> Fill in: the exact metric names your services expose, the scrape setup, and any
-> alerting on the error budget.
+`monitoring/rules.yml` records this per service and alerts with multi-window
+burn rates (fast burn pages, slow burn files a ticket), plus `up == 0` and a
+relay stuck DEGRADED. `docker compose --profile monitoring up -d` runs
+Prometheus with these rules.
+
+A stream that fails after its first message reports its status in trailers,
+which the metrics layer doesn't read. Such failures are counted as `OK`.
 
 ## Error budget
 

@@ -130,13 +130,16 @@ pub fn init_tracing(level: tracing::Level, buffer_capacity_bytes: usize) {
 pub async fn upload(
     grpc_addr: &str,
     data: Vec<u8>,
+    store: &dyn crate::store::GhostStore,
 ) -> Result<LogUploadResponse, Box<dyn std::error::Error + Send + Sync>> {
-    let mut client = LoggingClient::connect(grpc_addr.to_string()).await?;
+    let mut client = LoggingClient::new(crate::grpc::connect(grpc_addr).await?);
     let chunks: Vec<UploadChunk> = data
         .chunks(CHUNK_SIZE)
         .map(|c| UploadChunk { data: c.to_vec() })
         .collect();
-    let stream = futures::stream::iter(chunks);
-    let response = client.upload_debug_log(stream).await?;
+    let mut request = tonic::Request::new(futures::stream::iter(chunks));
+    crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_LOGGING)
+        .await;
+    let response = client.upload_debug_log(request).await?;
     Ok(response.into_inner())
 }

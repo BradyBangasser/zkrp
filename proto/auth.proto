@@ -20,18 +20,27 @@ message ChallengeRequest {
 }
 
 message ChallengeResponse {
+  // Random. The app attests over SHA-256("zkrp/attest/v1" || challenge ||
+  // SHA-256(credential_request)), binding the device to this enrollment.
   bytes challenge = 1;
 }
 
 message RedeemRequest {
+  // From the emailed magic link. Opaque to the client.
   bytes verification_token = 1;
-  bytes assertion = 2;
+  // A fresh App Attest *attestation* object (not an assertion): the server
+  // keeps no per-device key id, so there is nothing to look an assertion up by.
+  bytes attestation = 2;
+  // zkcred::request output: a commitment to the holder's link secret.
   bytes credential_request = 3;
 }
 
 message RedeemResponse {
-  bytes signature         = 1;
-  bytes issuer_public_key = 2;
+  bytes signature         = 1;  // blind BBS signature; zkcred::finalize
+  bytes issuer_public_key = 2;  // clients should pin this, not trust it
   string params_label     = 3;
-  string epoch            = 4;
+  uint64 epoch            = 4;
+  // Epoch length. Relays accept epochs `epoch` and `epoch + 1`, so the
+  // credential works until (epoch + 2) * epoch_secs.
+  uint64 epoch_secs       = 5;
 }

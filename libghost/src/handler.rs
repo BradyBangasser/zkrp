@@ -7,8 +7,10 @@ use crate::context::SwarmCommand;
 
 #[derive(Debug, Clone)]
 pub enum ZRPEvent {
+    /// An *account* became reachable: the first verified message from it this
+    /// session. Not a transport connection (see `crate::signed`).
     PeerConnected {
-        peer_id: libp2p::PeerId, // ephemeral, already public
+        peer_id: libp2p::PeerId,
         addr: libp2p::Multiaddr,
     },
     PeerDisconnected {
@@ -22,6 +24,7 @@ pub enum ZRPEvent {
 
     Message {
         conversation: ConversationId,
+        /// The account that signed the message, not the peer that forwarded it.
         peer_id: libp2p::PeerId,
         content_type: u16,
         payload: Vec<u8>,

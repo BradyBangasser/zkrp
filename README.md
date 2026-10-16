@@ -33,4 +33,12 @@ metrics and the error-budget model.
 encrypted peer-to-peer network.
 
 Full documentation is under `docs/`: architecture, the service catalog, the
-**gRPC API reference** (generated from the protos), and the reliability model.
+**gRPC API reference** (generated from the protos), deployment, and the
+reliability model.
+
+## Running it
+
+```bash
+cp .env.example .env    # then see docs/deployment.md for keys
+docker compose up -d --build
+```

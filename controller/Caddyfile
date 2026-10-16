@@ -1,0 +1,15 @@
+# TLS for a relay-only host (see caddy.service). The relay's gRPC listens on
+# 127.0.0.1:9001 (GRPC_BIND), so this is the only public way in.
+{$RELAY_DOMAIN} {
+	# For DNS load-balancer health monitors.
+	handle /healthz {
+		reverse_proxy 127.0.0.1:9466
+	}
+	handle {
+		reverse_proxy h2c://127.0.0.1:9001
+	}
+}
+
+# Optional extra names, e.g. bootstrap.caddy to put this relay behind
+# bootstrap.zkrp.net. See docs/deployment.md.
+import /etc/caddy/sites.d/*.caddy

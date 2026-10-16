@@ -91,10 +91,17 @@ impl NodeIdentity {
         key
     }
 
+    /// The HKDF label for peer-to-peer encryption within an app's namespace.
+    /// `"fratrat"` gives `fratrat-msg-enc`, the label FratRat has always used.
+    fn msg_label(app: &str) -> Vec<u8> {
+        format!("{app}-msg-enc").into_bytes()
+    }
+
     pub fn encrypt_for_peer(
         &self,
         plaintext: &[u8],
         peer_id_str: &str,
+        app: &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let recipient_x25519 = Self::x25519_pubkey_for_peer(peer_id_str)?;
 
@@ -103,7 +110,7 @@ impl NodeIdentity {
 
         let shared = ephemeral_secret.diffie_hellman(&recipient_x25519);
 
-        let enc_key = hkdf_sha256(shared.as_bytes(), b"fratrat-msg-enc");
+        let enc_key = hkdf_sha256(shared.as_bytes(), &Self::msg_label(app));
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&enc_key));
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
 
@@ -118,7 +125,7 @@ impl NodeIdentity {
         Ok(out)
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pub fn decrypt(&self, ciphertext: &[u8], app: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         if ciphertext.len() < 32 + 12 + 16 {
             return Err(format!(
                 "ciphertext too short: {} bytes (minimum 60)",
@@ -140,7 +147,7 @@ impl NodeIdentity {
         let our_secret = self.to_x25519_secret();
 
         let shared = our_secret.diffie_hellman(&ephemeral_pub);
-        let enc_key = hkdf_sha256(shared.as_bytes(), b"fratrat-msg-enc");
+        let enc_key = hkdf_sha256(shared.as_bytes(), &Self::msg_label(app));
 
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&enc_key));
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -180,4 +187,24 @@ fn hkdf_sha256(ikm: &[u8], info: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&okm);
     out
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::NodeIdentity;
+
+    #[test]
+    fn fratrat_label_is_unchanged() {
+        // Existing FratRat ciphertexts were sealed under this exact label.
+        assert_eq!(NodeIdentity::msg_label("fratrat"), b"fratrat-msg-enc");
+    }
+
+    #[test]
+    fn round_trip_and_app_separation() {
+        let alice = NodeIdentity::generate();
+        let bob = NodeIdentity::generate();
+        let ct = alice.encrypt_for_peer(b"hi", &bob.peer_id_string(), "fratrat").unwrap();
+        assert_eq!(bob.decrypt(&ct, "fratrat").unwrap(), b"hi");
+        assert!(bob.decrypt(&ct, "other").is_err());
+    }
 }

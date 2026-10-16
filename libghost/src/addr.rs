@@ -76,9 +76,9 @@ mod tests {
     #[test]
     fn accepts_reachable_and_circuits() {
         for s in [
-            "/ip4/116.203.218.60/tcp/9000",
-            "/dns4/relay.a.central.eu.infra.zkrp.net/tcp/9000",
-            "/ip4/116.203.218.60/tcp/9000/p2p-circuit",
+            "/ip4/1.1.1.1/tcp/9000",
+            "/dns4/relay.example.net/tcp/9000",
+            "/ip4/1.1.1.1/tcp/9000/p2p-circuit",
             // A circuit address whose *first* hop is private still passes.
             "/ip4/10.0.0.1/tcp/9000/p2p-circuit",
         ] {

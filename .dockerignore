@@ -1,8 +1,6 @@
 **/target
-target/**
-.git/
-.github/
-fly.toml
-README.md
-LICENSE
+.git
 .env
+*.env
+**/*.cred
+**/*.key

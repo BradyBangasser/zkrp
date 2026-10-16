@@ -1,4 +1,7 @@
 target
 */target
-*.lock
 .env
+controller/Cargo.lock
+libghost/Cargo.lock
+secrets/
+deploy/sites.d/*.caddy

@@ -1,0 +1,47 @@
+# SLO: 99.9% of gRPC requests succeed, per service, over 30 days.
+# A request fails when the server is at fault (UNKNOWN, INTERNAL, UNAVAILABLE,
+# DATA_LOSS, DEADLINE_EXCEEDED). Caller errors such as UNAUTHENTICATED or
+# INVALID_ARGUMENT do not spend the budget.
+groups:
+  - name: zkrp-slo
+    rules:
+      - record: zkrp:grpc_error_ratio:rate5m
+        expr: |
+          sum by (job) (rate(zkrp_grpc_requests_total{code=~"UNKNOWN|INTERNAL|UNAVAILABLE|DATA_LOSS|DEADLINE_EXCEEDED"}[5m]))
+            / sum by (job) (rate(zkrp_grpc_requests_total[5m]))
+      - record: zkrp:grpc_error_ratio:rate1h
+        expr: |
+          sum by (job) (rate(zkrp_grpc_requests_total{code=~"UNKNOWN|INTERNAL|UNAVAILABLE|DATA_LOSS|DEADLINE_EXCEEDED"}[1h]))
+            / sum by (job) (rate(zkrp_grpc_requests_total[1h]))
+      - record: zkrp:grpc_availability:30d
+        expr: |
+          1 - (
+            sum by (job) (increase(zkrp_grpc_requests_total{code=~"UNKNOWN|INTERNAL|UNAVAILABLE|DATA_LOSS|DEADLINE_EXCEEDED"}[30d]))
+              / sum by (job) (increase(zkrp_grpc_requests_total[30d]))
+          )
+
+      # Multi-window burn rate (Google SRE workbook): page when the budget
+      # would be gone in ~2 days, ticket when in ~10.
+      - alert: ZkrpErrorBudgetFastBurn
+        expr: zkrp:grpc_error_ratio:rate1h > (14.4 * 0.001) and zkrp:grpc_error_ratio:rate5m > (14.4 * 0.001)
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.job }} is burning its 99.9% error budget 14x too fast"
+      - alert: ZkrpErrorBudgetSlowBurn
+        expr: zkrp:grpc_error_ratio:rate1h > (3 * 0.001)
+        for: 1h
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $labels.job }} is burning its error budget 3x too fast"
+
+      - alert: ZkrpDown
+        expr: up{job=~"relay|auth"} == 0
+        for: 2m
+        labels: { severity: page }
+      - alert: ZkrpRelayDegraded
+        expr: zkrp_relay_health_status > 0
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "relay has no public address or lost the registry"
