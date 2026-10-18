@@ -16,6 +16,6 @@ Type=oneshot
 WorkingDirectory=/opt/%i
 # The updater service, if present, is left alone (it can't update itself
 # either); Postgres is pinned and upgraded deliberately.
-ExecStart=/bin/sh -c 'services=$$(docker compose config --services | grep -vx -e updater -e postgres -e prometheus); docker compose pull --quiet $$services && docker compose up -d $$services'
+ExecStart=/bin/sh -c 'services=$$(docker compose config --services | grep -vx -e updater -e postgres -e prometheus); docker compose pull --quiet $$services && docker compose up -d --no-deps $$services'
 # Drop the untagged images an update leaves behind.
 ExecStartPost=/usr/bin/docker image prune -f

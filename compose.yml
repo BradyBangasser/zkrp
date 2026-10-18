@@ -112,7 +112,9 @@ services:
       # The host's Docker (podman: DOCKER_SOCKET=/run/podman/podman.sock).
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       # The registry login from `docker login` (sudo: DOCKER_CONFIG=/root/.docker).
-      - ${DOCKER_CONFIG:-${HOME}/.docker}/config.json:/root/.docker/config.json:ro
+      # The directory, not config.json itself: a missing file as a bind
+      # source would be created on the host as a directory, breaking docker.
+      - ${DOCKER_CONFIG:-${HOME}/.docker}:/root/.docker:ro
       # This project: compose file, .env, deploy/env/*.env.
       - ./:/project:ro
     working_dir: /project
@@ -122,7 +124,10 @@ services:
       - |
         while true; do
           if docker compose pull --quiet auth caddy; then
-            docker compose up -d --no-build auth caddy
+            # --no-deps: never touch Postgres. Its bind mounts resolve to
+            # /project/... in here, so compose would see a changed config and
+            # recreate it.
+            docker compose up -d --no-build --no-deps auth caddy
             docker image prune -f >/dev/null
           else
             echo "pull failed; keeping what is running"

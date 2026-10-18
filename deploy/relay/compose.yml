@@ -70,7 +70,9 @@ services:
       # The host's Docker (podman: DOCKER_SOCKET=/run/podman/podman.sock).
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       # The registry login from `docker login` (sudo: DOCKER_CONFIG=/root/.docker).
-      - ${DOCKER_CONFIG:-${HOME}/.docker}/config.json:/root/.docker/config.json:ro
+      # The directory, not config.json itself: a missing file as a bind
+      # source would be created on the host as a directory, breaking docker.
+      - ${DOCKER_CONFIG:-${HOME}/.docker}:/root/.docker:ro
       # This project: compose.yml, .env, relay.env, caddy.env.
       - ./:/project:ro
     working_dir: /project
@@ -80,7 +82,7 @@ services:
       - |
         while true; do
           if docker compose pull --quiet relay caddy; then
-            docker compose up -d relay caddy
+            docker compose up -d --no-deps relay caddy
             docker image prune -f >/dev/null
           else
             echo "pull failed; keeping what is running"
