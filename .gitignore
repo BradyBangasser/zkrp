@@ -3,5 +3,6 @@ target
 .env
 secrets/
 deploy/env/*.env
+deploy/env/*.env.bak
 deploy/local/.env
 deploy/local/secrets/

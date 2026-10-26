@@ -137,7 +137,8 @@ too. The relay joins the core's `zkrp-relays` network, where that Caddy
 reaches its API and it reaches Postgres.
 
 Each command names its file, so nothing in the shared `.env` decides what
-runs:
+runs. `scripts/setup-core-relay.sh` asks for the settings below and writes
+both env files (`--start` also starts everything); by hand:
 
 1. **Caddy**: in `deploy/env/caddy.env`, `CADDY_ROLE=core-relay` and
    `RELAY_DOMAIN` (or `core-relay-bootstrap`, plus `BOOTSTRAP_DOMAIN` and
