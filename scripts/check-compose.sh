@@ -9,7 +9,7 @@ COMPOSE=${COMPOSE:-docker compose}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-cp -r compose.yml Dockerfile db monitoring deploy "$tmp"/
+cp -r compose.yml compose.relay.yml Dockerfile db monitoring deploy "$tmp"/
 for f in "$tmp"/deploy/env/*.example; do cp "$f" "${f%.example}"; done
 cp "$tmp"/deploy/env/relay.env "$tmp"/deploy/env/caddy.env "$tmp"/deploy/relay/
 
@@ -38,5 +38,6 @@ check() {
 check "core (compose.yml)"            "$tmp"
 check "core + monitoring"             "$tmp" --profile monitoring
 check "relay (deploy/relay)"          "$tmp/deploy/relay"
+check "relay on the core host"        "$tmp" -f compose.relay.yml
 check "local (deploy/local)"          "$tmp/deploy/local"
 exit $status

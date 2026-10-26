@@ -1,0 +1,3 @@
+# The core host also running a relay (compose.relay.yml): both APIs.
+import sites/auth.caddy
+import sites/relay.caddy

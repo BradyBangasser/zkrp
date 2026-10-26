@@ -7,7 +7,10 @@
 #   postgres:5432          → the nullifier set, and the relay registry that
 #                            relays on other hosts reach over a private network
 #
-# Relays run elsewhere (deploy/relay/compose.yml).
+# Relays run elsewhere (deploy/relay/compose.yml), or one runs on this host
+# as its own project: compose.relay.yml, with CADDY_ROLE=core-relay (or
+# core-relay-bootstrap) in caddy.env. It joins the zkrp-relays network, where
+# it reaches Postgres and this Caddy reaches it.
 #
 #   cp deploy/env/postgres.env.example deploy/env/postgres.env
 #   cp deploy/env/auth.env.example     deploy/env/auth.env
@@ -47,6 +50,7 @@ services:
     # POSTGRES_BIND in .env to that interface's address. Never a public one.
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
+    networks: [default, relays]
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 5s
@@ -84,11 +88,12 @@ services:
       dockerfile: Dockerfile
       target: caddy
     restart: unless-stopped
-    # AUTH_DOMAIN
+    # CADDY_ROLE=core and AUTH_DOMAIN; with a relay on this host
+    # CADDY_ROLE=core-relay and RELAY_DOMAIN (or core-relay-bootstrap and the
+    # bootstrap settings).
     env_file: [deploy/env/caddy.env]
-    environment:
-      CADDY_ROLE: core
     ports: ["80:80", "443:443"]
+    networks: [default, relays]
     volumes:
       - caddy-data:/data # certificates, kept across restarts
     depends_on: [auth]
@@ -146,6 +151,14 @@ services:
       - ./monitoring/rules.yml:/etc/prometheus/rules.yml:ro,z
       - prometheus-data:/prometheus
     ports: ["127.0.0.1:9090:9090"]
+
+networks:
+  default: {}
+  # Shared with a relay running on this host as its own compose project
+  # (compose.relay.yml): Postgres for the registry, and Caddy in
+  # front of the relay's API. A fixed name, so the other project can find it.
+  relays:
+    name: zkrp-relays
 
 volumes:
   pgdata: {}

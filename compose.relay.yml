@@ -1,0 +1,77 @@
+# A relay on the core host, from the same checkout as compose.yml but its own
+# compose project. Name the file every time; nothing in .env picks it:
+#
+#   cp deploy/env/relay.env.example deploy/env/relay.env   # fill it in, with
+#   #   DATABASE_URL=postgres://relay:<RELAY_DB_PASSWORD>@postgres/registry
+#   docker compose up -d                          # the core first: it makes the network
+#   docker compose -f compose.relay.yml up -d     # relay + updater
+#
+# It runs no Caddy: the core's Caddy holds ports 80 and 443 and fronts this
+# relay too (CADDY_ROLE=core-relay or core-relay-bootstrap in caddy.env). The
+# relay joins the core's zkrp-relays network, where that Caddy reaches it and
+# it reaches Postgres. A relay on a host of its own uses
+# deploy/relay/compose.yml instead.
+
+name: zkrp-relay
+
+services:
+  relay:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-relay:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: relay
+    restart: unless-stopped
+    env_file: [deploy/env/relay.env]
+    # libp2p (TCP and QUIC) is public; gRPC (9001), metrics (9464) and
+    # /healthz (9466) are reached through the core's Caddy.
+    ports: ["9000:9000/tcp", "9000:9000/udp"]
+    expose: ["9001", "9464", "9466"]
+    networks: [default, core]
+    volumes:
+      - relay-data:/data # the relay key: its peer id survives restarts
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-relay", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+
+  # Pulls a new relay image and recreates the relay if it changed; the core's
+  # updater looks after auth and Caddy. An update drops every connected
+  # client, which reconnects within seconds. Never updates itself (see
+  # compose.yml): `docker compose -f compose.relay.yml pull updater && docker
+  # compose -f compose.relay.yml up -d updater`.
+  updater:
+    image: docker.io/library/docker:29-cli
+    restart: unless-stopped
+    security_opt: ["label=disable"]
+    environment:
+      INTERVAL: ${UPDATE_INTERVAL:-300}
+    volumes:
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${DOCKER_CONFIG:-${HOME}/.docker}:/root/.docker:ro
+      - ./:/project:ro
+    working_dir: /project
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          if docker compose -f compose.relay.yml pull --quiet relay; then
+            docker compose -f compose.relay.yml up -d --no-build --no-deps relay
+            docker image prune -f >/dev/null
+          else
+            echo "pull failed; keeping what is running"
+          fi
+          sleep "$$INTERVAL"
+        done
+
+networks:
+  default: {}
+  # Made by compose.yml.
+  core:
+    name: zkrp-relays
+    external: true
+
+volumes:
+  relay-data: {}

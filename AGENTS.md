@@ -39,7 +39,7 @@ for college students) is built on it and lives in its own repository.
 | `proto/` | `relay.proto` (RelayService, BlobStore, Logging), `mailbox.proto`, `auth.proto` |
 | `db/` | Postgres init: separate `auth` and `registry` databases and roles |
 | `Dockerfile`, `docker-bake.hcl` | images `relay`, `auth`, `caddy` from one compile |
-| `compose.yml` | core host; `deploy/relay/compose.yml` relay hosts; `deploy/local/compose.yml` development |
+| `compose.yml` | core host; `deploy/relay/compose.yml` relay hosts (`compose.relay.yml` for one on the core host); `deploy/local/compose.yml` development |
 | `deploy/` | env templates, Caddy configs (baked into the caddy image), systemd updater, the deployment guide |
 | `docs/` | architecture, services, API reference, reliability |
 

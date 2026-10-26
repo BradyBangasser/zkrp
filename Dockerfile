@@ -77,7 +77,7 @@ ENTRYPOINT ["/usr/local/bin/zkrp-auth"]
 # Stock Caddy plus the Cloudflare DNS plugin (DNS-01 certificates for the
 # shared bootstrap name), with zkrp's configs baked in so hosts need no repo
 # checkout. CADDY_ROLE picks /etc/caddy/<role>.Caddyfile: core, relay,
-# relay-bootstrap.
+# relay-bootstrap, core-relay, core-relay-bootstrap.
 FROM docker.io/library/caddy:2.10-builder AS caddy-build
 RUN xcaddy build --with github.com/caddy-dns/cloudflare
 

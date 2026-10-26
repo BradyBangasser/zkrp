@@ -1,0 +1,4 @@
+# The core host's relay also answering for the shared bootstrap name.
+import sites/auth.caddy
+import sites/relay.caddy
+import sites/bootstrap.caddy

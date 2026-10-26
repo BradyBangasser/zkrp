@@ -15,7 +15,8 @@ Two kinds of host run them:
   auth and Postgres behind Caddy. One per deployment.
 - **Relay hosts** ([`relay/compose.yml`](relay/compose.yml)): a relay behind
   Caddy. As many as you like, in as many regions; each needs only that file
-  and two env files, no checkout of this repository.
+  and two env files, no checkout of this repository. One can also share the
+  core host ([below](#a-relay-on-the-core-host)).
 
 Images are tagged `latest` (main), the commit SHA, and the version for a `v*`
 tag (`0.2.0`). They build only when something in them changes
@@ -81,8 +82,9 @@ For every VM:
 
 ## The core host
 
-[`compose.yml`](../compose.yml): Postgres, auth, Caddy (`CADDY_ROLE=core`)
-and an updater.
+[`compose.yml`](../compose.yml): Postgres, auth, Caddy and an updater.
+Caddy's config is `CADDY_ROLE` in `caddy.env`: `core` here (relay hosts
+default to `relay`).
 
 | Public address | Caddy → | For |
 | --- | --- | --- |
@@ -100,7 +102,7 @@ and an updater.
    for f in postgres auth caddy; do cp deploy/env/$f.env.example deploy/env/$f.env; done
    ```
    `DATABASE_URL` in `auth.env` must use `AUTH_DB_PASSWORD` from
-   `postgres.env`. In `.env` (read by compose itself), set `POSTGRES_BIND` to
+   `postgres.env`; `caddy.env` needs `CADDY_ROLE=core`. In `.env` (read by compose itself), set `POSTGRES_BIND` to
    the host's private-network address so relays can reach the registry.
 4. **Keys**, once:
    ```sh
@@ -124,6 +126,34 @@ separate roles:
 | ---------- | ------- | --------------------------------------------------- |
 | `auth`     | `auth`  | `INSERT` on `nullifier` only, no `SELECT`           |
 | `registry` | `relay` | read/write `relay`; no access to `auth`             |
+
+### A relay on the core host
+
+A small deployment can run its first relay on the core host, from the same
+checkout: [`compose.relay.yml`](../compose.relay.yml) is its own compose
+project (`zkrp-relay`), with the relay and an updater for it. It runs no
+Caddy: the core's Caddy already holds ports 80 and 443 and fronts the relay
+too. The relay joins the core's `zkrp-relays` network, where that Caddy
+reaches its API and it reaches Postgres.
+
+Each command names its file, so nothing in the shared `.env` decides what
+runs:
+
+1. **Caddy**: in `deploy/env/caddy.env`, `CADDY_ROLE=core-relay` and
+   `RELAY_DOMAIN` (or `core-relay-bootstrap`, plus `BOOTSTRAP_DOMAIN` and
+   `CLOUDFLARE_API_TOKEN`), then `docker compose up -d`. This also creates
+   the `zkrp-relays` network, so the core starts first.
+2. **Relay**: copy and fill in `deploy/env/relay.env` as for a
+   [relay host](#relay-hosts), with the core's Postgres by its service name:
+   ```sh
+   cp deploy/env/relay.env.example deploy/env/relay.env
+   # DATABASE_URL=postgres://relay:<RELAY_DB_PASSWORD>@postgres/registry
+   docker compose -f compose.relay.yml up -d       # relay + updater
+   docker compose -f compose.relay.yml logs -f relay
+   ```
+3. **Firewall**: also open 9000 TCP and UDP on the core host.
+
+The core's updater looks after auth and Caddy, the relay's after the relay.
 
 ## Relay hosts
 
@@ -185,8 +215,9 @@ of Docker on that machine. With podman, set `DOCKER_SOCKET` (and
 gRPC is only ever public over TLS. Caddy gets and renews Let's Encrypt
 certificates for its names and speaks cleartext HTTP/2 (h2c) to the service
 on the compose network. Its configs are baked into the `zkrp-caddy` image
-(`deploy/caddy/`); `CADDY_ROLE` picks one: `core`, `relay`, or
-`relay-bootstrap`. Clients use `https://` URLs; libghost verifies them
+(`deploy/caddy/`); `CADDY_ROLE` picks one: `core`, `relay`,
+`relay-bootstrap`, or for a [relay on the core host](#a-relay-on-the-core-host)
+`core-relay` and `core-relay-bootstrap`. Clients use `https://` URLs; libghost verifies them
 against the bundled Mozilla roots. libp2p on port 9000 doesn't need this:
 it is already encrypted with Noise.
 
