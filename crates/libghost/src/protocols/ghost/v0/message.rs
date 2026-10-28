@@ -1,4 +1,3 @@
-use crate::keybundle::KeyBundle;
 use std::error::Error;
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -52,11 +51,11 @@ pub struct XRFMessage {
 }
 
 impl XRFMessage {
-    pub fn new(
-        _kb: &KeyBundle,
-        codec: u16,
-        payload: &[u8],
-    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    /// A message ready to sign. The payload is carried as given: the mesh
+    /// layer signs every message but encrypts nothing, so anything private
+    /// must be sealed by the app before it is published, e.g. with a key the
+    /// participants share, on a `crate::mailbox` topic.
+    pub fn new(codec: u16, payload: &[u8]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let secure_random = SystemRandom::new();
         let mut nonce = [0u8; 12];
         secure_random.fill(&mut nonce)?;

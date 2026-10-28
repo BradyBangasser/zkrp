@@ -14,7 +14,11 @@ BLS12-381). Enrollment is a magic link plus an Apple App Attest attestation:
 2. The app commits to a fresh random *link secret* and attests over
    `SHA-256("zkrp/attest/v1" || challenge || SHA-256(credential_request))`.
 3. `Redeem` verifies the attestation, records one nullifier, and blind-signs
-   `[link_secret, epoch]`. The issuer never sees the link secret.
+   `[link_secret, epoch]`. The issuer never sees the link secret. It also
+   returns the **community keys** for the credential's two epochs:
+   `HMAC(community-key, domain || epoch)` for the allowed email domain the
+   address falls under. Members seal their community's traffic with them
+   (below). Whoever holds auth's `community-key` can derive them all.
 
 The server persists only nullifiers: `HMAC(pepper, epoch || slot || email)`,
 with the pepper in KMS. There are 3 slots per address per epoch (reinstall, second
@@ -52,13 +56,24 @@ applications see (profiles, DM topics, end-to-end encryption), and it signs
 every mesh message together with its topic and a timestamp. The **transport**
 key is the libp2p identity, generated fresh on every launch.
 
-Relays see only transport peer ids and IP addresses, never message contents, so
-they can't link one session to the next or a peer id to a profile, even for an
-operator who also enrolls an account and reads profiles off the mesh.
-Receivers attribute each message to the account that signed it, not to the
-gossipsub neighbour that forwarded it, and drop unsigned, forged, or stale
-(more than 10 minutes off) messages. A signed hello on `ghost/hello` tells
-newly connected peers which account is behind a connection.
+A signed message names its account, so anything published in the clear tells
+every relay that forwards it which account is behind the connection. Apps
+therefore publish on **sealed topics** (`libghost::sealed`): the whole signed
+message (account, signature, content type, payload) is encrypted under a key
+registered for the topic and travels inside an anonymous outer message. Relays
+see transport peer ids, IP addresses, opaque topic names and ciphertext, so they
+can't link one session to the next or a connection to an account. A sealed topic
+accepts only sealed messages, and in sealed-only mode a context publishes
+nothing in the clear: the hello that tells newly connected peers which account
+is behind a connection goes only to the app's chosen sealed topics. Message
+lengths are not hidden.
+
+Topic keys come from the app: a community key (see enrollment) for
+community-wide topics and per-account inboxes derived from it, or a key two
+people share for their conversation. Receivers open the message, then
+attribute it to the account that signed it, not to the gossipsub neighbour that
+forwarded it, and drop unsigned, forged, or stale (more than 10 minutes off)
+messages.
 
 IP addresses remain visible to relays, and a stable home IP links sessions on
 its own. Hiding that needs a mixnet or Tor in front of the relays.

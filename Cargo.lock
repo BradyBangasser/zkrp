@@ -6879,6 +6879,7 @@ dependencies = [
  "bbs_plus",
  "blake2",
  "dock_crypto_utils",
+ "hmac 0.12.1",
  "rand 0.8.6",
  "schnorr_pok",
  "sha2 0.10.9",

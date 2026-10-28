@@ -10,6 +10,8 @@ pub const CONTENT_TYPE_TEXT: u16 = 0x0001;
 /// First content type reserved for libghost.
 pub const RESERVED_CONTENT_TYPES: u16 = 0xF000;
 pub const CONTENT_TYPE_HELLO: u16 = 0xF001;
+/// An anonymous outer message carrying a sealed one (see `crate::sealed`).
+pub const CONTENT_TYPE_SEALED: u16 = 0xF002;
 pub const CONTENT_TYPE_CHUNK_STORE: u16 = 0xF050;
 pub const CONTENT_TYPE_CHUNK_STORE_ACK: u16 = 0xF051;
 pub const CONTENT_TYPE_CHUNK_REQUEST: u16 = 0xF052;

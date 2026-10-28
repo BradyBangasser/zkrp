@@ -116,6 +116,75 @@ impl RotatingMailbox {
     }
 }
 
+// --- store-and-forward client ------------------------------------------------
+//
+// Gossipsub only reaches peers online at that moment. A sender also deposits
+// the (already end-to-end-encrypted) payload in the mailbox on a relay, and
+// the recipient fetches what it missed on reconnect. The relay sees a mailbox
+// id and ciphertext, and an anonymous admission; nothing else.
+
+pub mod proto {
+    tonic::include_proto!("zrp.mailbox.v1");
+}
+
+type ClientError = Box<dyn std::error::Error + Send + Sync>;
+type Client = proto::mailbox_service_client::MailboxServiceClient<tonic::transport::Channel>;
+
+/// One message a relay held for a mailbox. `msg_id` sorts chronologically and
+/// is the cursor for the next fetch.
+pub struct Held {
+    pub msg_id: String,
+    pub ciphertext: Vec<u8>,
+}
+
+async fn client(grpc_addr: &str) -> Result<Client, ClientError> {
+    Ok(Client::new(crate::grpc::connect(grpc_addr).await?))
+}
+
+/// Leave `ciphertext` in `mailbox_id` on the relay at `grpc_addr`. The caller
+/// encrypts; the relay stores whatever it is given.
+pub async fn deposit(
+    store: &dyn crate::store::GhostStore,
+    grpc_addr: &str,
+    mailbox_id: &str,
+    ciphertext: Vec<u8>,
+) -> Result<String, ClientError> {
+    let mut request = tonic::Request::new(proto::DepositRequest {
+        mailbox_id: mailbox_id.to_string(),
+        ciphertext,
+    });
+    crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_MAILBOX)
+        .await;
+    Ok(client(grpc_addr).await?.deposit(request).await?.into_inner().msg_id)
+}
+
+/// Messages in `mailbox_id` after the cursor `after` (empty for all retained),
+/// oldest first, and whether more remain.
+pub async fn fetch(
+    store: &dyn crate::store::GhostStore,
+    grpc_addr: &str,
+    mailbox_id: &str,
+    after: &str,
+) -> Result<(Vec<Held>, bool), ClientError> {
+    let mut request = tonic::Request::new(proto::FetchRequest {
+        mailbox_id: mailbox_id.to_string(),
+        after: after.to_string(),
+        limit: 0,
+    });
+    crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_MAILBOX)
+        .await;
+    let resp = client(grpc_addr).await?.fetch(request).await?.into_inner();
+    let held = resp
+        .envelopes
+        .into_iter()
+        .map(|e| Held {
+            msg_id: e.msg_id,
+            ciphertext: e.ciphertext,
+        })
+        .collect();
+    Ok((held, resp.has_more))
+}
+
 fn hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
     for byte in b {

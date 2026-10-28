@@ -22,6 +22,9 @@ for college students) is built on it and lives in its own repository.
   message and is what apps see; the libp2p *transport* key is new every
   launch, so relays can't link sessions. Attribute messages to the signing
   account, never to the gossipsub peer that forwarded them.
+- **Nothing in the clear.** A signed message names its account, so apps run
+  sealed-only (`libghost::sealed`) and publish on topics keyed by a community
+  key (from auth) or a key the participants share.
 - **zkrp knows nothing about FratRat.** App strings (meshes, topics, buckets,
   labels) are configuration or an app namespace passed in, never constants.
 - **Hosting is plain VMs (EC2, Hetzner).** Relays need raw TCP/UDP on stable
@@ -31,9 +34,9 @@ for college students) is built on it and lives in its own repository.
 
 | Path | What |
 | --- | --- |
-| `crates/libghost` | client library (iOS via FratRat's `rust/ios`): mesh, `admit`, `enroll`, `directory`, `signed`, `grpc` |
+| `crates/libghost` | client library (iOS via FratRat's `rust/ios`): mesh, `admit`, `enroll`, `directory`, `signed`, `sealed`, `community`, `mailbox` (ids and the store-and-forward client), `grpc` |
 | `crates/relay` | `zkrp-relay` binary: relay behaviour, admission gate, registry, gRPC services, `/healthz` |
-| `crates/auth` | `zkrp-auth` binary: magic link (`token`), App Attest (`attest`), `nullifier`, issuance, `keygen` |
+| `crates/auth` | `zkrp-auth` binary: magic link (`token`), App Attest (`attest`), `nullifier`, issuance and community keys, `keygen` |
 | `crates/zkcred` | BBS credentials; the admission context format both sides must build identically |
 | `crates/telemetry` | metrics exporter, gRPC metrics layer, `version()` |
 | `proto/` | `relay.proto` (RelayService, BlobStore, Logging), `mailbox.proto`, `auth.proto` |

@@ -80,6 +80,21 @@ pub fn epoch_at(unix_secs: u64, epoch_secs: u64) -> u64 {
     unix_secs / epoch_secs.max(1)
 }
 
+/// The shared key of one community (an allowed email domain) for one epoch,
+/// from the issuer's community secret. Auth gives each enrollee the keys for
+/// the epochs their credential is accepted in; members seal what only their
+/// community should read with them. Whoever holds `secret` can derive every
+/// community's keys.
+pub fn community_key(secret: &[u8], community: &str, epoch: u64) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    let mut m = <Hmac<sha2::Sha256> as Mac>::new_from_slice(secret).expect("hmac key");
+    m.update(b"zkrp/community/v1");
+    m.update(&(community.len() as u32).to_be_bytes());
+    m.update(community.as_bytes());
+    m.update(&epoch.to_be_bytes());
+    m.finalize().into_bytes().into()
+}
+
 fn epoch_fr(epoch: u64) -> Fr {
     Fr::from(epoch)
 }
