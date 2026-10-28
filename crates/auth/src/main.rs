@@ -43,14 +43,17 @@ fn params_label() -> String {
     std::env::var("PARAMS_LABEL").unwrap_or_else(|_| zkcred::DEFAULT_PARAMS_LABEL.into())
 }
 
-/// `zkrp-auth keygen <dir>`: write fresh hex secrets (token-key, issuer-key,
-/// nullifier-key) with mode 0600, plus issuer-public-key for the relays.
+/// `zkrp-auth keygen <dir>`: write whichever hex secrets are missing
+/// (token-key, issuer-key, nullifier-key, community-key) with mode 0600, plus
+/// issuer-public-key for the relays. Never overwrites a secret, so it is also
+/// how an existing deployment gains a secret a newer version needs.
 fn keygen(dir: &Path) -> Result<(), BoxError> {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
     std::fs::create_dir_all(dir)?;
+    let missing = |name: &str| !dir.join(name).exists();
     let write = |name: &str, bytes: &[u8], private: bool| -> Result<(), BoxError> {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -60,6 +63,7 @@ fn keygen(dir: &Path) -> Result<(), BoxError> {
             .open(dir.join(name))
             .map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
         writeln!(f, "{}", hex::encode(bytes))?;
+        eprintln!("wrote {name}");
         Ok(())
     };
     let random32 = || {
@@ -68,14 +72,25 @@ fn keygen(dir: &Path) -> Result<(), BoxError> {
         k
     };
 
-    let params = zkcred::Params::new(&params_label());
-    let issuer = zkcred::IssuerSecretKey::generate(&mut zkcred::rand::rngs::OsRng);
-    let public = issuer.public_key(&params).to_bytes();
+    for name in ["token-key", "nullifier-key", "community-key"] {
+        if missing(name) {
+            write(name, &random32(), true)?;
+        }
+    }
 
-    write("token-key", &random32(), true)?;
-    write("nullifier-key", &random32(), true)?;
-    write("issuer-key", &issuer.to_bytes(), true)?;
-    write("issuer-public-key", &public, false)?;
+    let params = zkcred::Params::new(&params_label());
+    let issuer = if missing("issuer-key") {
+        let issuer = zkcred::IssuerSecretKey::generate(&mut zkcred::rand::rngs::OsRng);
+        write("issuer-key", &issuer.to_bytes(), true)?;
+        issuer
+    } else {
+        let raw = std::fs::read_to_string(dir.join("issuer-key"))?;
+        zkcred::IssuerSecretKey::from_bytes(&hex::decode(raw.trim())?)?
+    };
+    let public = issuer.public_key(&params).to_bytes();
+    if missing("issuer-public-key") {
+        write("issuer-public-key", &public, false)?;
+    }
     println!("ISSUER_PUBLIC_KEY={}", hex::encode(&public));
     Ok(())
 }
@@ -183,6 +198,9 @@ async fn main() -> Result<(), BoxError> {
         issuer_public: issuer_public.clone(),
         epoch_secs,
         limiter: SendLimiter::new(),
+        community_secret: zeroize::Zeroizing::new(secret("community-key").map_err(|e| {
+            format!("{e} (run `zkrp-auth keygen` on the secrets directory to add it)")
+        })?),
     };
 
     tracing::info!("zkrp-auth {}", telemetry::version());

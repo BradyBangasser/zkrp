@@ -19,7 +19,7 @@ Two kinds of host run them:
   core host ([below](#a-relay-on-the-core-host)).
 
 Images are tagged `latest` (main), the commit SHA, and the version for a `v*`
-tag (`0.2.0`). They build only when something in them changes
+tag (`0.3.0`). They build only when something in them changes
 (`.github/workflows/images.yml`), so a docs-only push never restarts a relay.
 
 ## Everything on one machine, for development
@@ -76,6 +76,10 @@ For every VM:
 - **AWS access.** Relays need S3 (blobs, mailboxes, logs); auth needs SES and
   KMS. On EC2 give the instance a role and leave the keys empty; on Hetzner,
   use an IAM user limited to exactly those.
+- **Mailbox expiry.** Messages held for offline devices live under `mb/` in
+  the mailbox bucket (`MAILBOX_BUCKET`, default `BLOB_BUCKET`). Add an S3
+  lifecycle rule expiring the `mb/` prefix after 8 days: clients look back 7
+  days, and nothing should be kept longer than that.
 - **Private network** between the core and relay hosts (Hetzner private
   network, VPC peering, or WireGuard across providers), for the relay
   registry in Postgres. Without it, each relay lists only itself.
@@ -108,11 +112,14 @@ default to `relay`).
    ```sh
    docker compose run --rm --no-deps auth keygen /secrets
    ```
-   This writes `token-key`, `issuer-key`, and `nullifier-key` into the
-   `auth-secrets` volume and prints `ISSUER_PUBLIC_KEY`. It refuses to
-   overwrite existing keys. Put that public key in every relay's `relay.env`
+   This writes `token-key`, `issuer-key`, `nullifier-key` and
+   `community-key` into the `auth-secrets` volume and prints
+   `ISSUER_PUBLIC_KEY`. It only adds missing keys and never overwrites one, so
+   run it again after an upgrade that needs a new key (auth names the missing
+   key and refuses to start). Put the public key in every relay's `relay.env`
    and in FratRat's `Zkrp.xcconfig`. **Back up `issuer-key`**: losing it
-   invalidates every credential.
+   invalidates every credential. `community-key` derives every school's
+   community keys: whoever holds it can read what those communities seal.
    ```sh
    docker compose run --rm --no-deps --entrypoint cat auth /secrets/issuer-key
    ```
@@ -187,7 +194,7 @@ The core's updater looks after auth and Caddy, the relay's after the relay.
    their GitHub settings.)
 5. **Start**: `docker compose up -d`, then check:
    ```sh
-   docker compose logs -f relay              # "zkrp-relay 0.2.0+<sha>", "Relay PeerID: ..."
+   docker compose logs -f relay              # "zkrp-relay 0.3.0+<sha>", "Relay PeerID: ..."
    curl https://<RELAY_DOMAIN>/healthz       # ok
    ```
 6. **Point clients at it**: add its address to the `bootstrap.zkrp.net`
@@ -274,6 +281,7 @@ then `docker compose up -d caddy`, and check
 | `ISSUER_PUBLIC_KEY`  | yes      | From `keygen` on the core host. |
 | `AUTH_URL`           | yes      | Enrollment URL handed to apps by `GetNetworkConfig`. |
 | `AWS_REGION`, `BLOB_BUCKET`, `LOG_BUCKET`, `CF_DOMAIN` | yes | S3 and the CDN that serves blobs. |
+| `MAILBOX_BUCKET`     | no       | Held messages, under `mb/`. Default `BLOB_BUCKET`. Needs the `mb/` lifecycle rule. |
 | `DATABASE_URL`       | no       | The shared registry. Empty: the relay lists only itself. |
 | `EPOCH_SECS`         | no       | Must match auth. Default 30 days. |
 | `RELAY_MESHES`, `REGION` | no   | Advertised in `Health`/`ListRelays`. |

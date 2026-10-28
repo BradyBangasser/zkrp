@@ -2950,7 +2950,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libghost"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5511,7 +5511,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "telemetry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "http 1.4.0",
  "metrics",
@@ -6869,7 +6869,7 @@ dependencies = [
 
 [[package]]
 name = "zkcred"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -6879,6 +6879,7 @@ dependencies = [
  "bbs_plus",
  "blake2",
  "dock_crypto_utils",
+ "hmac 0.12.1",
  "rand 0.8.6",
  "schnorr_pok",
  "sha2 0.10.9",
@@ -6888,7 +6889,7 @@ dependencies = [
 
 [[package]]
 name = "zkrp-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6922,7 +6923,7 @@ dependencies = [
 
 [[package]]
 name = "zkrp-relay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",

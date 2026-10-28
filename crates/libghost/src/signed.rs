@@ -75,12 +75,9 @@ pub fn verify(topic: &str, msg: &GhostMessage, now: u64) -> Result<PeerId, SignE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybundle::KeyBundle;
 
     fn message(payload: &[u8]) -> GhostMessage {
-        let store: std::sync::Arc<dyn crate::store::GhostStore> =
-            std::sync::Arc::new(crate::store::MemoryStore::new());
-        GhostMessage::new(&KeyBundle::load_or_generate(&store), 0x0040, payload).unwrap()
+        GhostMessage::new(0x0040, payload).unwrap()
     }
 
     #[test]

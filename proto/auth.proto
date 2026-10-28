@@ -43,4 +43,13 @@ message RedeemResponse {
   // Epoch length. Relays accept epochs `epoch` and `epoch + 1`, so the
   // credential works until (epoch + 2) * epoch_secs.
   uint64 epoch_secs       = 5;
+  // The holder's community (their allowed email domain) keys for `epoch` and
+  // `epoch + 1`: what members seal community traffic with. Says nothing about
+  // which community it is.
+  repeated CommunityKey community_keys = 6;
+}
+
+message CommunityKey {
+  uint64 epoch = 1;
+  bytes  key   = 2;
 }

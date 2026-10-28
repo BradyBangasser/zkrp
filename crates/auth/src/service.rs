@@ -9,7 +9,9 @@ use crate::attest::AppAttest;
 use crate::mailer::Mailer;
 use crate::nullifier::NullifierSet;
 use crate::proto::auth_service_server::AuthService;
-use crate::proto::{ChallengeRequest, ChallengeResponse, RedeemRequest, RedeemResponse};
+use crate::proto::{
+    ChallengeRequest, ChallengeResponse, CommunityKey, RedeemRequest, RedeemResponse,
+};
 use crate::token::{CHALLENGE_LEN, TokenError, TokenKey};
 
 /// How long a magic link stays redeemable.
@@ -31,6 +33,8 @@ pub struct Auth {
     pub issuer_public: Vec<u8>,
     pub epoch_secs: u64,
     pub limiter: SendLimiter,
+    /// Derives each community's per-epoch key (`zkcred::community_key`).
+    pub community_secret: zeroize::Zeroizing<Vec<u8>>,
 }
 
 fn now_unix() -> u64 {
@@ -59,13 +63,18 @@ pub fn normalize_email(raw: &str) -> Option<String> {
 }
 
 impl Auth {
-    fn domain_allowed(&self, normalized: &str) -> bool {
-        let Some((_, domain)) = normalized.rsplit_once('@') else {
-            return false;
-        };
+    /// The allowed domain an address falls under (its community): a
+    /// department subdomain shares its school's.
+    fn community_of(&self, normalized: &str) -> Option<&str> {
+        let (_, domain) = normalized.rsplit_once('@')?;
         self.allowed_domains
             .iter()
-            .any(|d| domain == d || domain.ends_with(&format!(".{d}")))
+            .find(|d| domain == d.as_str() || domain.ends_with(&format!(".{d}")))
+            .map(String::as_str)
+    }
+
+    fn domain_allowed(&self, normalized: &str) -> bool {
+        self.community_of(normalized).is_some()
     }
 }
 
@@ -150,6 +159,13 @@ impl Auth {
                 TokenError::Invalid => Status::invalid_argument("invalid link"),
             })?;
 
+        // The token was only ever sealed for an allowed address, but the
+        // allowed list may have shrunk since.
+        let community = self
+            .community_of(&opened.email)
+            .ok_or_else(|| Status::permission_denied("this school isn't supported anymore"))?
+            .to_string();
+
         let binding = zkcred::attestation_binding(&opened.challenge, &req.credential_request);
         self.attest
             .verify(&req.attestation, &binding)
@@ -158,6 +174,13 @@ impl Auth {
         // Sign before claiming the nullifier so a malformed request can't burn
         // a slot; the signature is only released once the claim succeeds.
         let epoch = zkcred::epoch_at(now_unix(), self.epoch_secs);
+        let community_keys = [epoch, epoch + 1]
+            .into_iter()
+            .map(|e| CommunityKey {
+                epoch: e,
+                key: zkcred::community_key(&self.community_secret, &community, e).to_vec(),
+            })
+            .collect();
         let (params, issuer, request, context) = (
             self.params.clone(),
             self.issuer.clone(),
@@ -188,6 +211,7 @@ impl Auth {
             params_label: self.params.label().to_string(),
             epoch,
             epoch_secs: self.epoch_secs,
+            community_keys,
         }))
     }
 }

@@ -125,6 +125,12 @@ pub async fn finish(
     )?;
 
     crate::admit::save_credential(store, &credential, enrollment.params.label(), resp.epoch_secs);
+    crate::community::save(
+        store,
+        resp.community_keys
+            .into_iter()
+            .filter_map(|k| Some((k.epoch, k.key.try_into().ok()?))),
+    );
     store.delete(CHALLENGE_KEY);
     Ok(resp.epoch)
 }

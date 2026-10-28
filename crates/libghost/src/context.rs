@@ -3,8 +3,8 @@ use crate::relay::RelayClient;
 use crate::{
     codec::{self, Codec},
     handler::{ConnectionStatus, DisconnectReason, EventHandler, SendFailReason, ZRPEvent},
-    keybundle::KeyBundle,
     protocols::ghost::v0::{GhostEnvelope, GhostMessage, encode},
+    sealed::Seals,
     store::GhostStore,
 };
 use libp2p::dns::{ResolverConfig, ResolverOpts};
@@ -485,9 +485,12 @@ async fn swarm_task<B>(
                                 tracing::warn!("subscribe failed: {e}");
                             }
                         }
+                        SwarmCommand::Unsubscribe { topic } => {
+                            swarm
+                                .behaviour_mut()
+                                .unsubscribe_topic(libp2p::gossipsub::IdentTopic::new(&topic));
+                        }
                         SwarmCommand::Shutdown => break,
-
-                        _ => {}
                     }
                 }
                 _ = reconnect_backoff.tick() => {
@@ -550,10 +553,6 @@ async fn swarm_task<B>(
     }
 }
 
-async fn load_key_bundle(store: &Arc<dyn GhostStore>) -> KeyBundle {
-    KeyBundle::load_or_generate(store)
-}
-
 #[allow(unused, clippy::too_many_arguments)]
 async fn crypto_task(
     mut raw_rx: mpsc::Receiver<RawEvent>,
@@ -565,9 +564,8 @@ async fn crypto_task(
     store: Arc<dyn GhostStore>,
     blob_manager: Arc<BlobManager>,
     account: libp2p::identity::Keypair,
+    seals: Arc<Seals>,
 ) {
-    let kb = load_key_bundle(&store).await;
-
     // Transport peer -> the account it has proven (by signing) it speaks for,
     // and how many live transports each account has. Apps only ever see
     // account ids in PeerConnected / PeerDisconnected / Message.
@@ -597,6 +595,26 @@ async fn crypto_task(
                             tracing::warn!("Failed to deserialize message: {}", e);
                             continue;
                         }
+                    };
+
+                    // A sealed topic takes only sealed messages, and in
+                    // sealed-only mode nothing is accepted in the clear.
+                    let key = seals.key(&topic);
+                    let msg = match (msg.codec == codec::CONTENT_TYPE_SEALED, key) {
+                        (true, Some(key)) => {
+                            let Some(inner) = crate::sealed::open(&key, &topic, &msg.payload)
+                                .and_then(|b| postcard::from_bytes::<GhostMessage>(&b).ok())
+                                .filter(|m| m.codec != codec::CONTENT_TYPE_SEALED)
+                            else {
+                                tracing::debug!("dropping unopenable sealed message on {topic}");
+                                continue;
+                            };
+                            inner
+                        }
+                        (true, None) => continue,
+                        (false, Some(_)) => continue,
+                        (false, None) if seals.required() => continue,
+                        (false, None) => msg,
                     };
 
                     // Attribute to the signing account, never to the forwarder.
@@ -691,16 +709,19 @@ async fn crypto_task(
                     // finished by the first.
                     transport_addrs.insert(peer_id, addr);
                     let tx = crypto_tx.clone();
+                    let seals = Arc::clone(&seals);
                     tokio::spawn(async move {
                         for delay in [2, 6] {
                             tokio::time::sleep(Duration::from_secs(delay)).await;
-                            let _ = tx
-                                .send(SwarmCommand::Publish {
-                                    topic: crate::signed::HELLO_TOPIC.to_string(),
-                                    payload: Vec::new(),
-                                    content_type: codec::CONTENT_TYPE_HELLO,
-                                })
-                                .await;
+                            for topic in seals.hello_topics() {
+                                let _ = tx
+                                    .send(SwarmCommand::Publish {
+                                        topic,
+                                        payload: Vec::new(),
+                                        content_type: codec::CONTENT_TYPE_HELLO,
+                                    })
+                                    .await;
+                            }
                         }
                     });
                 }
@@ -780,9 +801,23 @@ async fn crypto_task(
                             content_type
                         );
 
-                        if let Ok(mut message) = GhostMessage::new(&kb, content_type, &payload) {
+                        if let Ok(mut message) = GhostMessage::new(content_type, &payload) {
                             crate::signed::sign(&account, &topic, &mut message, crate::admit::now_unix());
-                            let payload = postcard::to_allocvec(&message).unwrap();
+                            let signed = postcard::to_allocvec(&message).unwrap();
+                            let payload = match seals.key(&topic) {
+                                Some(key) => {
+                                    let sealed = crate::sealed::seal(&key, &topic, &signed);
+                                    let Ok(outer) = GhostMessage::new(codec::CONTENT_TYPE_SEALED, &sealed) else {
+                                        continue;
+                                    };
+                                    postcard::to_allocvec(&outer).unwrap()
+                                }
+                                None if seals.required() => {
+                                    tracing::warn!("sealed-only: not publishing on an unsealed topic");
+                                    continue;
+                                }
+                                None => signed,
+                            };
                             let envelope = encode(&payload);
                             let mut encoded = Vec::new();
                             envelope.encode(&mut encoded).unwrap();
@@ -795,6 +830,9 @@ async fn crypto_task(
                     }
                     SwarmCommand::Subscribe { topic } => {
                         let _ = swarm_tx.send(SwarmCommand::Subscribe { topic }).await;
+                    }
+                    SwarmCommand::Unsubscribe { topic } => {
+                        let _ = swarm_tx.send(SwarmCommand::Unsubscribe { topic }).await;
                     }
                     SwarmCommand::Shutdown => {
                         let _ = swarm_tx.send(SwarmCommand::Shutdown).await;
@@ -816,7 +854,6 @@ pub enum SwarmCommand {
     Subscribe {
         topic: String,
     },
-    #[allow(unused)]
     Unsubscribe {
         topic: String,
     },
@@ -851,6 +888,7 @@ pub(crate) enum RawEvent {
 #[derive(Clone)]
 pub struct ZRPHandle {
     cmd_tx: mpsc::Sender<SwarmCommand>,
+    seals: Arc<Seals>,
     blob_manager: Option<Arc<BlobManager>>,
     debug_log_endpoint: Option<String>,
     store: Arc<dyn GhostStore>,
@@ -901,6 +939,23 @@ impl ZRPHandle {
 
     pub async fn unsubscribe(&self, topic: String) {
         let _ = self.cmd_tx.send(SwarmCommand::Unsubscribe { topic }).await;
+    }
+
+    /// This context's sealed topics (see `crate::sealed`).
+    pub fn seals(&self) -> &Seals {
+        &self.seals
+    }
+
+    /// Seal `topic` with `key` and subscribe to it.
+    pub async fn subscribe_sealed(&self, topic: String, key: [u8; 32]) {
+        self.seals.insert(topic.clone(), key);
+        self.subscribe(topic).await;
+    }
+
+    /// Unsubscribe from `topic` and forget its key.
+    pub async fn unsubscribe_sealed(&self, topic: String) {
+        self.seals.remove(&topic);
+        self.unsubscribe(topic).await;
     }
 
     pub async fn shutdown(&self) {
@@ -957,9 +1012,16 @@ pub struct ZRPContext {
     store: Arc<dyn GhostStore>,
     debug_log_endpoint: Option<String>,
     blob_manager: Option<Arc<BlobManager>>,
+    seals: Arc<Seals>,
 }
 
 impl ZRPContext {
+    /// Sealed topics, to configure before `start` (e.g. sealed-only mode).
+    /// Shared with the handle `start` returns.
+    pub fn seals(&self) -> Arc<Seals> {
+        Arc::clone(&self.seals)
+    }
+
     pub async fn register_codec(&mut self, id: u16, codec: Codec) {
         self.codecs.lock().await.insert(id, codec);
     }
@@ -1034,6 +1096,7 @@ impl ZRPContext {
 
         let store_handle = ZRPHandle {
             cmd_tx: crypto_tx.clone(),
+            seals: Arc::clone(&self.seals),
             blob_manager: None,
             debug_log_endpoint: debug_log_endpoint.clone(),
             store: Arc::clone(&self.store),
@@ -1082,6 +1145,7 @@ impl ZRPContext {
             Arc::clone(&self.store),
             Arc::clone(&blob_manager),
             account,
+            Arc::clone(&self.seals),
         ));
 
         let _ = crypto_tx
@@ -1092,6 +1156,7 @@ impl ZRPContext {
 
         Ok(ZRPHandle {
             cmd_tx: crypto_tx,
+            seals: Arc::clone(&self.seals),
             blob_manager: Some(blob_manager),
             debug_log_endpoint,
             store: Arc::clone(&self.store),
@@ -1107,6 +1172,7 @@ impl ZRPContext {
             store,
             blob_manager: None,
             debug_log_endpoint: None,
+            seals: Arc::default(),
         }
     }
 }
@@ -1123,6 +1189,7 @@ impl Default for ZRPContext {
             store: Arc::new(crate::store::MemoryStore::new()),
             blob_manager: None,
             debug_log_endpoint: None,
+            seals: Arc::default(),
         }
     }
 }

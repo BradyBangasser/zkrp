@@ -7,8 +7,9 @@
 #
 # The first run makes the deployment's keys in auth's secrets volume and
 # writes ISSUER_PUBLIC_KEY to deploy/local/.env (git-ignored). It also copies
-# the issuer key to deploy/local/secrets/issuer-key, so the FratRat test CLI
-# can give itself a credential:  DEV_ISSUER_KEY=deploy/local/secrets/issuer-key
+# the issuer and community keys to deploy/local/secrets/, so the FratRat test
+# CLI can give itself a credential:  DEV_ISSUER_KEY=deploy/local/secrets/issuer-key
+# (it reads community-key from the same directory).
 #
 # Stop with:   docker compose -f deploy/local/compose.yml down
 # Start over:  docker compose -f deploy/local/compose.yml down -v && rm -r deploy/local/.env deploy/local/secrets
@@ -42,24 +43,19 @@ else
   set_env LOCAL_BIND 127.0.0.1
 fi
 
-if ! grep -q '^ISSUER_PUBLIC_KEY=[0-9a-f]' "$env_file"; then
-  echo "== Making local keys (auth's secrets volume)"
-  # A placeholder so compose can build and run the key generator.
-  set_env ISSUER_PUBLIC_KEY placeholder
-  "${compose[@]}" build auth
-  run_auth() { "${compose[@]}" run --rm --no-deps "$@"; }
-  if out=$(run_auth auth keygen /secrets 2>/dev/null); then
-    key=$(sed -n 's/^ISSUER_PUBLIC_KEY=//p' <<<"$out" | tr -d '\r')
-  else
-    # Keys already in the volume (e.g. after deleting .env): reuse them.
-    key=$(run_auth --entrypoint cat auth /secrets/issuer-public-key | tr -d '\r\n')
-  fi
-  [[ -n "$key" ]] || { echo "keygen produced no key" >&2; exit 1; }
-  set_env ISSUER_PUBLIC_KEY "$key"
-  mkdir -p "$secrets"
-  run_auth --entrypoint cat auth /secrets/issuer-key > "$secrets/issuer-key"
-  chmod 600 "$secrets/issuer-key"
-fi
+echo "== Local keys (auth's secrets volume; only missing ones are made)"
+# A placeholder so compose can build and run the key generator the first time.
+grep -q '^ISSUER_PUBLIC_KEY=[0-9a-f]' "$env_file" 2>/dev/null || set_env ISSUER_PUBLIC_KEY placeholder
+"${compose[@]}" build auth
+run_auth() { "${compose[@]}" run --rm --no-deps "$@"; }
+key=$(run_auth auth keygen /secrets | sed -n 's/^ISSUER_PUBLIC_KEY=//p' | tr -d '\r')
+[[ -n "$key" ]] || { echo "keygen produced no key" >&2; exit 1; }
+set_env ISSUER_PUBLIC_KEY "$key"
+mkdir -p "$secrets"
+for name in issuer-key community-key; do
+  run_auth --entrypoint cat auth "/secrets/$name" > "$secrets/$name"
+  chmod 600 "$secrets/$name"
+done
 
 echo "== Building and starting"
 "${compose[@]}" up -d --build

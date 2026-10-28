@@ -183,6 +183,10 @@ impl MeshBehaviour for ClientBehavior {
         Ok(())
     }
 
+    fn unsubscribe_topic(&mut self, topic: gossipsub::IdentTopic) {
+        self.gossipsub.unsubscribe(&topic);
+    }
+
     fn kademlia_get_closest(&mut self, key: PeerId) {
         self.kademlia.get_closest_peers(key);
     }

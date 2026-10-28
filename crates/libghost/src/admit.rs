@@ -146,12 +146,16 @@ pub fn save_credential(
 /// accept its epoch and the one after it.
 pub fn credential_expires_at(store: &dyn GhostStore) -> Option<u64> {
     let (cred, _) = load_credential(store)?;
-    let epoch_secs = store
+    Some((cred.epoch() + 2).saturating_mul(epoch_secs(store)))
+}
+
+/// The epoch length the stored credential was issued with.
+pub fn epoch_secs(store: &dyn GhostStore) -> u64 {
+    store
         .get(EPOCH_SECS_KEY)
         .and_then(|b| b.try_into().ok().map(u64::from_be_bytes))
         .filter(|s| *s > 0)
-        .unwrap_or(DEFAULT_EPOCH_SECS);
-    Some((cred.epoch() + 2).saturating_mul(epoch_secs))
+        .unwrap_or(DEFAULT_EPOCH_SECS)
 }
 
 /// The stored credential and the parameters it was issued under.
