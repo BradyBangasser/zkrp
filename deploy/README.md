@@ -19,7 +19,7 @@ Two kinds of host run them:
   core host ([below](#a-relay-on-the-core-host)).
 
 Images are tagged `latest` (main), the commit SHA, and the version for a `v*`
-tag (`0.2.0`). They build only when something in them changes
+tag (`0.3.0`). They build only when something in them changes
 (`.github/workflows/images.yml`), so a docs-only push never restarts a relay.
 
 ## Everything on one machine, for development
@@ -194,7 +194,7 @@ The core's updater looks after auth and Caddy, the relay's after the relay.
    their GitHub settings.)
 5. **Start**: `docker compose up -d`, then check:
    ```sh
-   docker compose logs -f relay              # "zkrp-relay 0.2.0+<sha>", "Relay PeerID: ..."
+   docker compose logs -f relay              # "zkrp-relay 0.3.0+<sha>", "Relay PeerID: ..."
    curl https://<RELAY_DOMAIN>/healthz       # ok
    ```
 6. **Point clients at it**: add its address to the `bootstrap.zkrp.net`
