@@ -17,7 +17,7 @@ status=0
 check() {
   local name=$1 dir=$2; shift 2
   local out
-  if ! out=$(cd "$dir" && ISSUER_PUBLIC_KEY=00 $COMPOSE "$@" config 2>&1); then
+  if ! out=$(cd "$dir" && ISSUER_PUBLIC_KEY=00 PUSH_PUBLIC_KEY=00 $COMPOSE "$@" config 2>&1); then
     echo "FAIL $name"; echo "$out" | head -5; status=1; return
   fi
   # A missing bind source makes the container start with an empty directory
@@ -31,7 +31,7 @@ check() {
   if [ -n "$missing" ]; then
     echo "FAIL $name: missing bind sources:"; echo "$missing"; status=1
   else
-    echo "ok   $name: $(cd "$dir" && ISSUER_PUBLIC_KEY=00 $COMPOSE "$@" config --services | tr '\n' ' ')"
+    echo "ok   $name: $(cd "$dir" && ISSUER_PUBLIC_KEY=00 PUSH_PUBLIC_KEY=00 $COMPOSE "$@" config --services | tr '\n' ' ')"
   fi
 }
 

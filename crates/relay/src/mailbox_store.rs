@@ -12,6 +12,12 @@ pub const DEFAULT_FETCH_LIMIT: i32 = 100;
 pub const MAX_FETCH_LIMIT: i32 = 500;
 
 const PREFIX: &str = "mb/";
+/// Push registrations: `push/<mailbox id>/<hex tag>` holding a sealed token.
+const PUSH_PREFIX: &str = "push/";
+/// A sealed APNs/FCM token is well under this.
+pub const MAX_SEALED_TOKEN_BYTES: usize = 512;
+/// Registrations per mailbox handed to the push service, at most.
+const MAX_REGISTRATIONS: i32 = 16;
 
 #[derive(Clone)]
 pub struct MailboxStore {
@@ -151,6 +157,81 @@ impl MailboxStore {
             });
         }
         Ok((out, has_more))
+    }
+}
+
+impl MailboxStore {
+    /// Store (or replace) one device's sealed push token for a mailbox.
+    pub async fn register(
+        &self,
+        mailbox_id: &str,
+        tag: &[u8],
+        sealed_token: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        if !Self::valid_id(mailbox_id) || !(16..=32).contains(&tag.len()) {
+            return Err(StoreError::BadId);
+        }
+        if sealed_token.is_empty() {
+            return Err(StoreError::Empty);
+        }
+        if sealed_token.len() > MAX_SEALED_TOKEN_BYTES {
+            return Err(StoreError::TooLarge);
+        }
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(format!("{PUSH_PREFIX}{mailbox_id}/{}", hex::encode(tag)))
+            .body(ByteStream::from(sealed_token))
+            .content_type("application/octet-stream")
+            .send()
+            .await
+            .map_err(|e| StoreError::S3(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The sealed tokens registered for a mailbox, minus the one under
+    /// `except_tag` (the sender's own device).
+    pub async fn sealed_tokens(
+        &self,
+        mailbox_id: &str,
+        except_tag: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        if !Self::valid_id(mailbox_id) {
+            return Err(StoreError::BadId);
+        }
+        let prefix = format!("{PUSH_PREFIX}{mailbox_id}/");
+        let skip = format!("{prefix}{}", hex::encode(except_tag));
+        let listing = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&prefix)
+            .max_keys(MAX_REGISTRATIONS)
+            .send()
+            .await
+            .map_err(|e| StoreError::S3(e.to_string()))?;
+        let mut out = Vec::new();
+        for key in listing.contents().iter().filter_map(|o| o.key()) {
+            if key == skip {
+                continue;
+            }
+            let obj = self
+                .client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| StoreError::S3(e.to_string()))?;
+            let bytes = obj
+                .body
+                .collect()
+                .await
+                .map_err(|e| StoreError::S3(e.to_string()))?
+                .into_bytes();
+            out.push(bytes.to_vec());
+        }
+        Ok(out)
     }
 }
 

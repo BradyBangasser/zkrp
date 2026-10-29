@@ -19,7 +19,7 @@ Two kinds of host run them:
   core host ([below](#a-relay-on-the-core-host)).
 
 Images are tagged `latest` (main), the commit SHA, and the version for a `v*`
-tag (`0.3.0`). They build only when something in them changes
+tag (`0.4.0`). They build only when something in them changes
 (`.github/workflows/images.yml`), so a docs-only push never restarts a relay.
 
 ## Everything on one machine, for development
@@ -79,7 +79,8 @@ For every VM:
 - **Mailbox expiry.** Messages held for offline devices live under `mb/` in
   the mailbox bucket (`MAILBOX_BUCKET`, default `BLOB_BUCKET`). Add an S3
   lifecycle rule expiring the `mb/` prefix after 8 days: clients look back 7
-  days, and nothing should be kept longer than that.
+  days, and nothing should be kept longer than that. Push registrations live
+  under `push/` in the same bucket: give it the same rule.
 - **Private network** between the core and relay hosts (Hetzner private
   network, VPC peering, or WireGuard across providers), for the relay
   registry in Postgres. Without it, each relay lists only itself.
@@ -123,7 +124,22 @@ default to `relay`).
    ```sh
    docker compose run --rm --no-deps --entrypoint cat auth /secrets/issuer-key
    ```
-5. **Start**: `docker compose up -d`. Prometheus too:
+5. **Push** (optional). In the Apple developer account, create an APNs key
+   (Keys → +, Apple Push Notifications service) and note its key id and your
+   team id. Then:
+   ```sh
+   cp deploy/env/push.env.example deploy/env/push.env   # key id, team id, bundle id
+   docker compose run --rm --no-deps push keygen /secrets   # prints PUSH_PUBLIC_KEY
+   docker compose run --rm --no-deps -T --entrypoint sh push \
+     -c 'cat > /secrets/apns-key.p8' < AuthKey_XXXXXXXXXX.p8
+   ```
+   Set `PUSH_BIND` in `.env` to the private-network address (like
+   `POSTGRES_BIND`), and on every relay `PUSH_URL=http://<that address>:9003`
+   (`http://push:9003` for a relay on this host) and `PUSH_PUBLIC_KEY`. The
+   push service sees device tokens but no mailbox ids; relays see mailbox ids
+   but only sealed tokens. Run both by the same operator and they could be
+   correlated by timing, so neither logs either.
+6. **Start**: `docker compose up -d`. Prometheus too:
    `docker compose --profile monitoring up -d` (on `127.0.0.1:9090`).
 
 On first start Postgres runs `db/init/00-init.sh`, creating two databases with
@@ -194,7 +210,7 @@ The core's updater looks after auth and Caddy, the relay's after the relay.
    their GitHub settings.)
 5. **Start**: `docker compose up -d`, then check:
    ```sh
-   docker compose logs -f relay              # "zkrp-relay 0.3.0+<sha>", "Relay PeerID: ..."
+   docker compose logs -f relay              # "zkrp-relay 0.4.0+<sha>", "Relay PeerID: ..."
    curl https://<RELAY_DOMAIN>/healthz       # ok
    ```
 6. **Point clients at it**: add its address to the `bootstrap.zkrp.net`
@@ -282,6 +298,7 @@ then `docker compose up -d caddy`, and check
 | `AUTH_URL`           | yes      | Enrollment URL handed to apps by `GetNetworkConfig`. |
 | `AWS_REGION`, `BLOB_BUCKET`, `LOG_BUCKET`, `CF_DOMAIN` | yes | S3 and the CDN that serves blobs. |
 | `MAILBOX_BUCKET`     | no       | Held messages, under `mb/`. Default `BLOB_BUCKET`. Needs the `mb/` lifecycle rule. |
+| `PUSH_URL`, `PUSH_PUBLIC_KEY` | no | The core's push service (private network) and its key. Both or neither; without them `Register` is refused and nothing is pushed. |
 | `DATABASE_URL`       | no       | The shared registry. Empty: the relay lists only itself. |
 | `EPOCH_SECS`         | no       | Must match auth. Default 30 days. |
 | `RELAY_MESHES`, `REGION` | no   | Advertised in `Health`/`ListRelays`. |
@@ -305,6 +322,19 @@ volume: the relay's peer id survives restarts), and the metrics (`9464`),
 
 Secrets are never environment variables: `keygen` writes them as files into
 the `auth-secrets` volume, mounted at `/secrets`.
+
+### Push (`push.env`)
+
+| Variable | Notes |
+| --- | --- |
+| `APNS_KEY_ID`, `APNS_TEAM_ID` | The APNs key (`apns-key.p8` in the `push-secrets` volume) and team. |
+| `APNS_TOPIC` | The app's bundle id. |
+| `APNS` | `log`: log alerts instead of sending them (development). |
+| `PUSH_ALERT_TITLE`, `PUSH_ALERT_BODY` | The alert's words; the default body is "New message". Alerts never carry content. |
+
+`push keygen` writes `push-key` into the `push-secrets` volume. A new key
+breaks every registration until devices register again (they do on their
+next launch).
 
 ## Health
 

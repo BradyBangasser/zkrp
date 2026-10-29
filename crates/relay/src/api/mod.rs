@@ -9,7 +9,7 @@ use crate::{
     api::{
         blob::BlobService,
         log::LogService,
-        mailbox::{MailboxServiceImpl, proto::mailbox_service_server::MailboxServiceServer},
+        mailbox::{MailboxServiceImpl, Pusher, proto::mailbox_service_server::MailboxServiceServer},
         proto::{
             blob_store_server::BlobStoreServer, logging_server::LoggingServer,
             relay_service_client::RelayServiceClient, relay_service_server::RelayServiceServer,
@@ -70,6 +70,7 @@ pub async fn serve(
         .add_service(MailboxServiceServer::with_interceptor(
             MailboxServiceImpl {
                 store: MailboxStore::new(s3, state.config.mailbox_bucket.clone()),
+                push: state.config.push.as_ref().map(Pusher::new),
             },
             Admission::interceptor(state.admission.clone(), SERVICE_MAILBOX),
         ))

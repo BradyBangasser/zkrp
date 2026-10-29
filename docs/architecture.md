@@ -96,3 +96,17 @@ Because gossipsub is ephemeral, a message for an offline recipient is stored as
 an opaque, end-to-end-encrypted blob under a rotating, capability-style
 `mailbox_id` and fetched on reconnect. The relay stores only ciphertext keyed by
 mailbox id, in S3 under a lifecycle rule, with no link to identity.
+
+## Push
+
+A device registers its push token under each mailbox it watches, **sealed**
+to the push service's public key (`zkcred::sealed_box`, a fresh ephemeral key
+every time) and filed under a tag derived from a device secret and the mailbox
+id. Relays store the boxes beside the mailbox (`push/` in S3, same lifecycle)
+and can neither open them nor link them to each other or across mailboxes.
+When something is deposited, the relay hands that mailbox's boxes, minus the
+sender's own tag, to `zkrp-push` on the private network; it opens them and
+sends a content-free alert. The push service sees device tokens but never a
+mailbox id or message; relays see mailbox ids but never a token. Someone who
+runs and logs both could correlate them by timing, so neither logs either,
+and Apple sees only that a device got an alert.

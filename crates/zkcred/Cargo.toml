@@ -19,6 +19,9 @@ ark-std = { version = "0.4", default-features = false, features = ["std"] }
 blake2 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
+# sealed_box: push tokens sealed to the push service.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305.workspace = true
 zeroize.workspace = true
 # Same rand as ark-std 0.4; enables OsRng behind `zkcred::rand`.
 rand = { version = "0.8", default-features = false, features = ["std", "getrandom"] }

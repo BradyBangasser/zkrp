@@ -6,6 +6,7 @@
 #   https://<AUTH_DOMAIN>  → auth:9002   enrollment (apps)
 #   postgres:5432          → the nullifier set, and the relay registry that
 #                            relays on other hosts reach over a private network
+#   push:9003              → push alerts, for relays (private network only)
 #
 # Relays run elsewhere (deploy/relay/compose.yml), or one runs on this host
 # as its own project: compose.relay.yml, with CADDY_ROLE=core-relay (or
@@ -15,8 +16,10 @@
 #   cp deploy/env/postgres.env.example deploy/env/postgres.env
 #   cp deploy/env/auth.env.example     deploy/env/auth.env
 #   cp deploy/env/caddy.env.example    deploy/env/caddy.env
-#   # fill in all three, then
+#   cp deploy/env/push.env.example     deploy/env/push.env
+#   # fill them in, then
 #   docker compose run --rm --no-deps auth keygen /secrets   # once; prints ISSUER_PUBLIC_KEY
+#   docker compose run --rm --no-deps push keygen /secrets   # once; prints PUSH_PUBLIC_KEY
 #   docker compose up -d
 #
 # The images build from this repository (`docker compose build`) or come from
@@ -81,6 +84,31 @@ services:
       postgres:
         condition: service_healthy
 
+  # Opens the sealed push tokens relays hand it and sends content-free
+  # alerts (proto/push.proto). Relays reach it like Postgres: on this host
+  # over the zkrp-relays network (http://push:9003), from other hosts over
+  # the private network (set PUSH_BIND in .env). Never public, never behind
+  # Caddy. Its key and the APNs key are files in its own volume.
+  push:
+    image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-push:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: push
+    restart: unless-stopped
+    env_file: [deploy/env/push.env]
+    volumes:
+      - push-secrets:/secrets
+    ports:
+      - "${PUSH_BIND:-127.0.0.1}:9003:9003"
+    expose: ["9467"]
+    networks: [default, relays]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-push", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+
   caddy:
     image: ${REGISTRY:-ghcr.io/bradybangasser}/zkrp-caddy:${TAG:-latest}
     build:
@@ -98,7 +126,7 @@ services:
       - caddy-data:/data # certificates, kept across restarts
     depends_on: [auth]
 
-  # Pulls new images and recreates auth and Caddy if theirs changed. Never
+  # Pulls new images and recreates auth, push and Caddy if theirs changed. Never
   # Postgres (pinned; upgrade it deliberately) and never itself: its bind
   # mounts name paths inside this container, which a recreate from in here
   # would get wrong. Update it with
@@ -128,11 +156,11 @@ services:
       - -c
       - |
         while true; do
-          if docker compose pull --quiet auth caddy; then
+          if docker compose pull --quiet auth push caddy; then
             # --no-deps: never touch Postgres. Its bind mounts resolve to
             # /project/... in here, so compose would see a changed config and
             # recreate it.
-            docker compose up -d --no-build --no-deps auth caddy
+            docker compose up -d --no-build --no-deps auth push caddy
             docker image prune -f >/dev/null
           else
             echo "pull failed; keeping what is running"
@@ -163,5 +191,6 @@ networks:
 volumes:
   pgdata: {}
   auth-secrets: {}
+  push-secrets: {}
   caddy-data: {}
   prometheus-data: {}

@@ -35,6 +35,8 @@ use schnorr_pok::compute_random_oracle_challenge;
 use schnorr_pok::discrete_log::{PokDiscreteLog, PokDiscreteLogProtocol};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+pub mod sealed_box;
+
 pub use ark_std::rand;
 
 const MESSAGE_COUNT: u32 = 2;

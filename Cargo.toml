@@ -6,6 +6,7 @@ members = [
   "crates/auth",
   "crates/zkcred",
   "crates/telemetry",
+  "crates/push",
 ]
 
 [workspace.package]
