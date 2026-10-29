@@ -27,8 +27,8 @@ permissions:
   packages: write
 
 jobs:
-  # The three images (relay, auth, caddy) come from one Dockerfile whose
-  # `build` stage compiles both Rust binaries at once; one bake run shares
+  # The images (relay, auth, push, caddy) come from one Dockerfile whose
+  # `build` stage compiles the Rust binaries at once; one bake run shares
   # that stage between them, so the workspace is compiled once per platform.
   # Each platform builds natively on its own runner (no QEMU: emulated Rust
   # compiles are several times slower) and pushes its images by digest; the
@@ -76,6 +76,7 @@ jobs:
           set: |
             relay.tags=${{ steps.names.outputs.registry }}/zkrp-relay
             auth.tags=${{ steps.names.outputs.registry }}/zkrp-auth
+            push.tags=${{ steps.names.outputs.registry }}/zkrp-push
             caddy.tags=${{ steps.names.outputs.registry }}/zkrp-caddy
             *.output=type=image,push-by-digest=true,name-canonical=true,push=true
             *.cache-from=type=gha,scope=${{ steps.names.outputs.slug }}
@@ -83,7 +84,7 @@ jobs:
 
       - name: Record digests
         run: |
-          for target in relay auth caddy; do
+          for target in relay auth push caddy; do
             digest=$(jq -r --arg t "$target" '.[$t]["containerimage.digest"]' <<<"$METADATA")
             test -n "$digest" && test "$digest" != null
             mkdir -p "digests/$target"
@@ -100,7 +101,7 @@ jobs:
           retention-days: 1
 
   # Tags each image over both platforms: the commit SHA always, `latest` for
-  # main, and the version (0.3.0) for a v0.3.0 tag.
+  # main, and the version (0.4.1) for a v0.4.1 tag.
   merge:
     needs: build
     runs-on: ubuntu-24.04
@@ -122,7 +123,7 @@ jobs:
       - name: Tag the multi-arch images
         run: |
           registry="ghcr.io/${OWNER,,}"
-          for target in relay auth caddy; do
+          for target in relay auth push caddy; do
             image="$registry/zkrp-$target"
             tags=(-t "$image:$SHA")
             [ "$REF" = refs/heads/main ] && tags+=(-t "$image:latest")

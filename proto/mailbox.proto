@@ -10,22 +10,17 @@ import "google/protobuf/empty.proto";
 // derived from a name, peer id, or credential. Knowing the id is what grants
 // the ability to subscribe to it; treat it like a secret.
 //
-// Two lifecycles, one structure:
-//   USER  -- your rotating personal mailbox. A handful of your own devices
-//            register here; senders drop a message and the relay wakes you.
-//   PARTY -- a shared mailbox for one event. Every attendee registers their
-//            device token; a party update wakes all of them at once.
+// Push: a device registers a *sealed* push token under each mailbox it
+// watches (Register). The token is sealed to the push service's public key
+// (zkcred::sealed_box, NetworkConfig.push_public_key) with a fresh ephemeral
+// key every time, so the relay stores boxes it can't open and can't link to
+// each other or across mailboxes. When a message is deposited, the relay hands
+// the mailbox's boxes to the push service, which opens them and sends a
+// content-free alert; it never learns the mailbox id.
 //
-// There is deliberately NO Notify RPC. The relay fires pushes itself when it
-// routes a message addressed to a mailbox, so nothing here is a public endpoint
-// an attacker could use to spam a device or probe whether a mailbox is live.
-//
-// The relay stores only: mailbox_id -> {device tokens, expiry}. No identity, no
-// peer id, no link to the nullifier set. In memory, TTL'd, never logged.
-enum MailboxKind {
-  USER  = 0;
-  PARTY = 1;
-}
+// There is deliberately no public Notify RPC: only a deposit triggers a push,
+// so nothing here lets an attacker spam a device or probe whether a mailbox
+// is live without also depositing into it.
 
 // --- store-and-forward -------------------------------------------------------
 //
@@ -39,6 +34,9 @@ enum MailboxKind {
 message DepositRequest {
   string mailbox_id = 1;
   bytes  ciphertext = 2;  // opaque; encrypted client-side to the pair/party
+  // The sender's own registration tag for this mailbox (see RegisterRequest),
+  // so its own device isn't woken for its own message. Empty: wake everyone.
+  bytes  sender_tag = 3;
 }
 message DepositResponse {
   string msg_id     = 1;  // lexicographically sortable = chronological
@@ -62,8 +60,21 @@ message FetchResponse {
   bool has_more               = 2;
 }
 
+// --- push registration ------------------------------------------------------
+
+message RegisterRequest {
+  string mailbox_id   = 1;
+  // An id for this device in this mailbox only (16-32 bytes): a keyed hash
+  // of the mailbox id, so it differs per mailbox. Re-registering with the
+  // same tag replaces the earlier box.
+  bytes  tag          = 2;
+  // zkcred::sealed_box of the device's push token, to the push service.
+  bytes  sealed_token = 3;
+}
+
 service MailboxService {
-  // --- store-and-forward (active) ---
-  rpc Deposit(DepositRequest) returns (DepositResponse);
-  rpc Fetch(FetchRequest)     returns (FetchResponse);
+  rpc Deposit(DepositRequest)   returns (DepositResponse);
+  rpc Fetch(FetchRequest)       returns (FetchResponse);
+  // Registrations expire with the mailbox (an S3 lifecycle rule on push/).
+  rpc Register(RegisterRequest) returns (google.protobuf.Empty);
 }

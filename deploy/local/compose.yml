@@ -97,6 +97,21 @@ services:
       postgres:
         condition: service_healthy
 
+  # Push in log mode: alerts are logged (`logs push`), not sent to Apple.
+  push:
+    build: { context: ../.., dockerfile: Dockerfile, target: push }
+    image: zkrp-local/push
+    environment:
+      APNS: log
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - push-secrets:/secrets
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/zkrp-push", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+
   relay:
     build: { context: ../.., dockerfile: Dockerfile, target: relay }
     image: zkrp-local/relay
@@ -113,6 +128,8 @@ services:
       RELAY_MESHES: fratrat-v1
       DATABASE_URL: postgres://relay:local@postgres/registry
       ISSUER_PUBLIC_KEY: ${ISSUER_PUBLIC_KEY:?run scripts/local-up.sh}
+      PUSH_URL: http://push:9003
+      PUSH_PUBLIC_KEY: ${PUSH_PUBLIC_KEY:?run scripts/local-up.sh}
       EPOCH_SECS: ${EPOCH_SECS:-2592000}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
@@ -143,4 +160,5 @@ volumes:
   s3-data: {}
   pgdata: {}
   auth-secrets: {}
+  push-secrets: {}
   relay-data: {}

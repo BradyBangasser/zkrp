@@ -1,0 +1,20 @@
+syntax = "proto3";
+package zrp.push.v1;
+
+// Internal: relays -> the push service, on the private network only (never
+// behind Caddy). The push service opens each sealed token
+// (zkcred::sealed_box) and sends a content-free alert. It is told nothing
+// else: not the mailbox, not the message, not which relay's client it was.
+service PushService {
+  rpc Notify(NotifyRequest) returns (NotifyResponse);
+}
+
+message NotifyRequest {
+  // Each opens to: one byte naming the service (1 = APNs production,
+  // 2 = APNs sandbox, for development builds), then the raw device token.
+  repeated bytes sealed_tokens = 1;
+}
+
+message NotifyResponse {
+  uint32 sent = 1;
+}

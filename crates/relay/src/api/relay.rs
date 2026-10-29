@@ -97,6 +97,7 @@ impl RelayService for RelayServiceImpl {
             epoch_secs: c.admission.as_ref().map(|a| a.epoch_secs).unwrap_or(0),
             meshes: c.meshes.clone(),
             refresh_after_secs: 3600,
+            push_public_key: c.push.as_ref().map(|p| p.public_key.clone()).unwrap_or_default(),
         }))
     }
 

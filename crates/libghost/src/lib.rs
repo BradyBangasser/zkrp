@@ -15,6 +15,7 @@ pub mod keybundle;
 pub mod mailbox;
 pub mod messager;
 pub mod protocols;
+pub mod push;
 pub mod relay;
 pub mod sealed;
 pub mod signed;

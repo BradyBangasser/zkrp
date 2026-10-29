@@ -21,7 +21,14 @@ A libp2p relay node plus a gRPC control plane, served on `GRPC_PORT`:
   through the CDN URL in the upload response. Requires an admission.
 - **Logging** - client-streaming debug-log upload. Requires an admission.
 - **MailboxService** - store-and-forward `Deposit`/`Fetch` so an offline device
-  can be reached without the relay knowing who it is. Requires an admission.
+  can be reached without the relay knowing who it is, and `Register` for a
+  sealed push token per mailbox (architecture.md, Push). Requires an admission.
+
+## push (`zrp.push.v1`, internal)
+
+`zkrp-push`, on the core host's private network only. Relays call `Notify`
+with a mailbox's sealed push tokens after a deposit; it opens them and sends
+content-free APNs alerts. It keeps nothing.
 
 ## zkcred
 

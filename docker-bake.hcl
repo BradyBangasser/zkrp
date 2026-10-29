@@ -1,13 +1,13 @@
-# zkrp's three images, built together from one Dockerfile:
+# zkrp's images, built together from one Dockerfile:
 #
-#   docker buildx bake -f docker-bake.hcl           # all three, for this machine
+#   docker buildx bake -f docker-bake.hcl           # all of them, for this machine
 #   docker buildx bake -f docker-bake.hcl relay     # one
 #   REGISTRY=ghcr.io/you TAG=abc123 docker buildx bake -f docker-bake.hcl --push
 #
 # Name the file: without -f, bake also reads compose.yml and merges its
 # services in as targets.
 #
-# One bake run shares the Dockerfile's `build` stage between relay and auth,
+# One bake run shares the Dockerfile's `build` stage between the Rust images,
 # so the workspace is compiled once per platform, not once per image.
 
 variable "REGISTRY" {
@@ -38,7 +38,7 @@ function "tags" {
 }
 
 group "default" {
-  targets = ["relay", "auth", "caddy"]
+  targets = ["relay", "auth", "push", "caddy"]
 }
 
 target "_common" {
@@ -58,6 +58,12 @@ target "auth" {
   inherits = ["_common"]
   target   = "auth"
   tags     = tags("zkrp-auth")
+}
+
+target "push" {
+  inherits = ["_common"]
+  target   = "push"
+  tags     = tags("zkrp-push")
 }
 
 target "caddy" {

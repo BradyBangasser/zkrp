@@ -57,6 +57,13 @@ for name in issuer-key community-key; do
   chmod 600 "$secrets/$name"
 done
 
+echo "== Push key (push's secrets volume)"
+grep -q '^PUSH_PUBLIC_KEY=[0-9a-f]' "$env_file" || set_env PUSH_PUBLIC_KEY placeholder
+"${compose[@]}" build push
+push_key=$(run_auth push keygen /secrets | sed -n 's/^PUSH_PUBLIC_KEY=//p' | tr -d '\r')
+[[ -n "$push_key" ]] || { echo "push keygen produced no key" >&2; exit 1; }
+set_env PUSH_PUBLIC_KEY "$push_key"
+
 echo "== Building and starting"
 "${compose[@]}" up -d --build
 

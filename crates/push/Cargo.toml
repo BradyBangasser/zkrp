@@ -1,0 +1,29 @@
+[package]
+name = "zkrp-push"
+description = "zkrp push: opens sealed push tokens from relays and sends content-free alerts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zkrp-push"
+path = "src/main.rs"
+
+[dependencies]
+zkcred.workspace = true
+telemetry.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+hex.workspace = true
+zeroize.workspace = true
+futures.workspace = true
+# APNs over HTTP/2 with token (.p8) auth; ring, not OpenSSL.
+a2 = { version = "0.10", default-features = false, features = ["ring"] }
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true

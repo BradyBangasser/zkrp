@@ -38,10 +38,11 @@ for college students) is built on it and lives in its own repository.
 | `crates/relay` | `zkrp-relay` binary: relay behaviour, admission gate, registry, gRPC services, `/healthz` |
 | `crates/auth` | `zkrp-auth` binary: magic link (`token`), App Attest (`attest`), `nullifier`, issuance and community keys, `keygen` |
 | `crates/zkcred` | BBS credentials; the admission context format both sides must build identically |
+| `crates/push` | `zkrp-push` binary: opens sealed push tokens from relays, sends content-free APNs alerts |
 | `crates/telemetry` | metrics exporter, gRPC metrics layer, `version()` |
-| `proto/` | `relay.proto` (RelayService, BlobStore, Logging), `mailbox.proto`, `auth.proto` |
+| `proto/` | `relay.proto` (RelayService, BlobStore, Logging), `mailbox.proto`, `auth.proto`, `push.proto` (internal) |
 | `db/` | Postgres init: separate `auth` and `registry` databases and roles |
-| `Dockerfile`, `docker-bake.hcl` | images `relay`, `auth`, `caddy` from one compile |
+| `Dockerfile`, `docker-bake.hcl` | images `relay`, `auth`, `push`, `caddy` from one compile |
 | `compose.yml` | core host; `deploy/relay/compose.yml` relay hosts (`compose.relay.yml` for one on the core host); `deploy/local/compose.yml` development |
 | `deploy/` | env templates, Caddy configs (baked into the caddy image), systemd updater, the deployment guide |
 | `docs/` | architecture, services, API reference, reliability |

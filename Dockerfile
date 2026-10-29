@@ -4,9 +4,10 @@
 # its own binary out of it, so building all of them (docker-bake.hcl, CI)
 # compiles the workspace once per platform. Build from the repository root:
 #
-#   docker buildx bake -f docker-bake.hcl     # all three: relay, auth, caddy
+#   docker buildx bake -f docker-bake.hcl     # all: relay, auth, push, caddy
 #   docker build --target relay -t zkrp-relay .
 #   docker build --target auth  -t zkrp-auth .
+#   docker build --target push  -t zkrp-push .
 #   docker build --target caddy -t zkrp-caddy .
 
 # ── The compile ────────────────────────────────────────────────────────────
@@ -22,8 +23,8 @@ COPY proto proto
 ARG TARGETPLATFORM
 RUN --mount=type=cache,id=cargo-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
-    cargo build --release --locked -p zkrp-relay -p zkrp-auth \
- && install -D -t /out target/release/zkrp-relay target/release/zkrp-auth
+    cargo build --release --locked -p zkrp-relay -p zkrp-auth -p zkrp-push \
+ && install -D -t /out target/release/zkrp-relay target/release/zkrp-auth target/release/zkrp-push
 
 # ── The common runtime ─────────────────────────────────────────────────────
 FROM docker.io/library/debian:trixie-slim AS runtime
@@ -72,6 +73,24 @@ EXPOSE 9002/tcp 9465/tcp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["/usr/local/bin/zkrp-auth", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/zkrp-auth"]
+
+# ── push: opens sealed push tokens and sends content-free alerts ───────────
+# Run with compose.yml, on the private network only. Its key and the APNs
+# key live in its secrets volume (deploy/README.md):
+#
+#   docker compose run --rm --no-deps push keygen /secrets
+FROM runtime AS push
+RUN useradd --system --uid 10003 --no-create-home --shell /usr/sbin/nologin zkrp-push \
+ && mkdir -p /secrets && chown zkrp-push: /secrets && chmod 700 /secrets
+COPY --from=build /out/zkrp-push /usr/local/bin/zkrp-push
+ARG GIT_SHA=""
+ENV ZKRP_BUILD_SHA=${GIT_SHA}
+USER zkrp-push
+ENV PUSH_PORT=9003 CREDENTIALS_DIRECTORY=/secrets
+EXPOSE 9003/tcp 9467/tcp
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["/usr/local/bin/zkrp-push", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/zkrp-push"]
 
 # ── caddy: TLS in front of the gRPC APIs ───────────────────────────────────
 # Stock Caddy plus the Cloudflare DNS plugin (DNS-01 certificates for the

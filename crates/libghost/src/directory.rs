@@ -33,6 +33,9 @@ pub struct Directory {
     pub auth_url: String,
     pub blob_cdn_domain: String,
     pub epoch_secs: u64,
+    /// Where push tokens are sealed to (`zkcred::sealed_box`); empty when the
+    /// network has no push service.
+    pub push_public_key: Vec<u8>,
     /// The gRPC URL that answered. Use it (or any relay's `grpc_url`) for
     /// blob, mailbox and log calls.
     pub source_url: String,
@@ -81,6 +84,7 @@ async fn fetch(url: &str) -> Result<Directory, Box<dyn std::error::Error + Send 
         auth_url: config.auth_url,
         blob_cdn_domain: config.blob_cdn_domain,
         epoch_secs: config.epoch_secs,
+        push_public_key: config.push_public_key,
         source_url: url.to_string(),
         fetched_at: crate::admit::now_unix(),
         stale: false,
@@ -191,6 +195,7 @@ mod tests {
             auth_url: "https://auth.example".into(),
             blob_cdn_domain: String::new(),
             epoch_secs: 0,
+            push_public_key: vec![],
             source_url: source.into(),
             fetched_at: 0,
             stale: false,

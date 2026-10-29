@@ -142,20 +142,45 @@ async fn client(grpc_addr: &str) -> Result<Client, ClientError> {
 }
 
 /// Leave `ciphertext` in `mailbox_id` on the relay at `grpc_addr`. The caller
-/// encrypts; the relay stores whatever it is given.
+/// encrypts; the relay stores whatever it is given. `sender_tag` is this
+/// device's push tag for the mailbox (see `register`), so the relay doesn't
+/// wake the sender; empty when it never registered.
 pub async fn deposit(
     store: &dyn crate::store::GhostStore,
     grpc_addr: &str,
     mailbox_id: &str,
     ciphertext: Vec<u8>,
+    sender_tag: Vec<u8>,
 ) -> Result<String, ClientError> {
     let mut request = tonic::Request::new(proto::DepositRequest {
         mailbox_id: mailbox_id.to_string(),
         ciphertext,
+        sender_tag,
     });
     crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_MAILBOX)
         .await;
     Ok(client(grpc_addr).await?.deposit(request).await?.into_inner().msg_id)
+}
+
+/// Ask to be woken when something is deposited in `mailbox_id`.
+/// `sealed_token` is `zkcred::sealed_box::seal(push_public_key, token)`;
+/// `tag` identifies this device within this mailbox only (16-32 bytes).
+pub async fn register(
+    store: &dyn crate::store::GhostStore,
+    grpc_addr: &str,
+    mailbox_id: &str,
+    tag: Vec<u8>,
+    sealed_token: Vec<u8>,
+) -> Result<(), ClientError> {
+    let mut request = tonic::Request::new(proto::RegisterRequest {
+        mailbox_id: mailbox_id.to_string(),
+        tag,
+        sealed_token,
+    });
+    crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_MAILBOX)
+        .await;
+    client(grpc_addr).await?.register(request).await?;
+    Ok(())
 }
 
 /// Messages in `mailbox_id` after the cursor `after` (empty for all retained),

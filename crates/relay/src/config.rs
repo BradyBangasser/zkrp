@@ -89,6 +89,25 @@ pub struct RelayConfig {
     pub public_grpc_url: String,
     /// Served to clients by GetNetworkConfig, so apps don't hard-code it.
     pub auth_url: String,
+    /// The push service (internal gRPC, private network) and the key apps
+    /// seal push tokens to. Push is off unless both are set.
+    pub push: Option<PushConfig>,
+}
+
+#[derive(Clone)]
+pub struct PushConfig {
+    pub url: String,
+    pub public_key: Vec<u8>,
+}
+
+fn push() -> Option<PushConfig> {
+    let url = std::env::var("PUSH_URL").ok().filter(|s| !s.is_empty())?;
+    let key = std::env::var("PUSH_PUBLIC_KEY").unwrap_or_default();
+    let public_key = hex::decode(key.trim())
+        .ok()
+        .filter(|k| k.len() == 32)
+        .expect("PUSH_URL is set but PUSH_PUBLIC_KEY isn't a 32-byte hex key");
+    Some(PushConfig { url, public_key })
 }
 
 pub fn load_config() -> RelayConfig {
@@ -119,6 +138,7 @@ pub fn load_config() -> RelayConfig {
             })
             .unwrap_or_default(),
         auth_url: std::env::var("AUTH_URL").unwrap_or_default(),
+        push: push(),
         admission: admission(),
     }
 }
