@@ -56,12 +56,20 @@ pub struct RelayState {
 /// How long a new peer has to present a credential before it is dropped.
 const ADMIT_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Admission bookkeeping for the swarm loop. Peer ids live here only while
-/// their connection does.
+/// How long a disconnected peer stays in the routing table. Clients get a
+/// new transport id every launch, so one that stays away isn't coming back
+/// under this id; keeping it only makes every newcomer dial a dead peer and
+/// spend the relay's circuit budget. A brief drop (a phone changing
+/// networks) reconnects well within this.
+const DEPARTED_GRACE: Duration = Duration::from_secs(120);
+
+/// Peer bookkeeping for the swarm loop. Peer ids live here only while their
+/// connection does (or, in `departed`, for the grace period after).
 #[derive(Default)]
 struct Gate {
     pending: HashMap<PeerId, std::time::Instant>,
     admitted: HashSet<PeerId>,
+    departed: HashMap<PeerId, std::time::Instant>,
 }
 
 type Verdict = (PeerId, ResponseChannel<AdmitResponse>, bool);
@@ -348,8 +356,19 @@ async fn run(relay_config: RelayConfig) -> Result<(), BoxError> {
                     let _ = swarm.disconnect_peer_id(peer);
                 }
             }
-            _ = sweep.tick(), if admission.is_some() => {
+            _ = sweep.tick() => {
                 let now = std::time::Instant::now();
+                let gone: Vec<PeerId> = gate
+                    .departed
+                    .iter()
+                    .filter(|(_, at)| now.duration_since(**at) >= DEPARTED_GRACE)
+                    .map(|(p, _)| *p)
+                    .collect();
+                for peer in gone {
+                    gate.departed.remove(&peer);
+                    swarm.behaviour_mut().kademlia.remove_peer(&peer);
+                }
+
                 let expired: Vec<PeerId> = gate
                     .pending
                     .iter()
@@ -411,6 +430,7 @@ fn handle_event(
             ..
         } => {
             if num_established.get() == 1 {
+                gate.departed.remove(&peer_id);
                 state.connected_peers.fetch_add(1, Ordering::Relaxed);
                 if state.admission.is_some() && !gate.admitted.contains(&peer_id) {
                     gate.pending
@@ -459,13 +479,14 @@ fn handle_event(
             cause,
             ..
         } => {
-            // Deliberately NOT calling kademlia.remove_peer here. Mobile peers
-            // reconnect constantly; evicting them on every disconnect kept the
-            // routing table permanently empty.
+            // Not evicted from the routing table right away: mobile peers
+            // reconnect constantly, and evicting on every disconnect kept the
+            // table empty. The sweep drops peers gone for DEPARTED_GRACE.
             if num_established == 0 {
                 dec(&state.connected_peers);
                 gate.pending.remove(&peer_id);
                 gate.admitted.remove(&peer_id);
+                gate.departed.insert(peer_id, std::time::Instant::now());
             }
             debug!("Peer {peer_id} conn closed, remaining={num_established}, cause={cause:?}");
         }
