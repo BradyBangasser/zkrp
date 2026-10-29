@@ -101,7 +101,7 @@ jobs:
           retention-days: 1
 
   # Tags each image over both platforms: the commit SHA always, `latest` for
-  # main, and the version (0.4.0) for a v0.4.0 tag.
+  # main, and the version (0.4.1) for a v0.4.1 tag.
   merge:
     needs: build
     runs-on: ubuntu-24.04
