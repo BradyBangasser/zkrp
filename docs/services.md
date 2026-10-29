@@ -19,7 +19,9 @@ A libp2p relay node plus a gRPC control plane, served on `GRPC_PORT`:
   relays join through the shared registry instead.
 - **BlobStore** - chunked, streaming blob upload to object storage. Downloads go
   through the CDN URL in the upload response. Requires an admission.
-- **Logging** - client-streaming debug-log upload. Requires an admission.
+- **Logging** - client-streaming debug-log upload. Requires an admission. An
+  upload marked `x-zkrp-upload-kind: report` (a user report) is filed under
+  `report/` instead of `log/`; operators read them with `zkrp-relay reports`.
 - **MailboxService** - store-and-forward `Deposit`/`Fetch` so an offline device
   can be reached without the relay knowing who it is, and `Register` for a
   sealed push token per mailbox (architecture.md, Push). Requires an admission.

@@ -19,7 +19,7 @@ Two kinds of host run them:
   core host ([below](#a-relay-on-the-core-host)).
 
 Images are tagged `latest` (main), the commit SHA, and the version for a `v*`
-tag (`0.4.1`). They build only when something in them changes
+tag (`0.5.0`). They build only when something in them changes
 (`.github/workflows/images.yml`), so a docs-only push never restarts a relay.
 
 ## Everything on one machine, for development
@@ -210,7 +210,7 @@ The core's updater looks after auth and Caddy, the relay's after the relay.
    their GitHub settings.)
 5. **Start**: `docker compose up -d`, then check:
    ```sh
-   docker compose logs -f relay              # "zkrp-relay 0.4.1+<sha>", "Relay PeerID: ..."
+   docker compose logs -f relay              # "zkrp-relay 0.5.0+<sha>", "Relay PeerID: ..."
    curl https://<RELAY_DOMAIN>/healthz       # ok
    ```
 6. **Point clients at it**: add its address to the `bootstrap.zkrp.net`
@@ -335,6 +335,21 @@ the `auth-secrets` volume, mounted at `/secrets`.
 `push keygen` writes `push-key` into the `push-secrets` volume. A new key
 breaks every registration until devices register again (they do on their
 next launch).
+
+## Reports
+
+User reports arrive through the anonymous log upload, filed under `report/`
+in `LOG_BUCKET` (debug logs are under `log/`). They name the reported account
+and, if the reporter chose, recent messages; never the reporter. On any relay
+host:
+
+```sh
+docker compose exec relay zkrp-relay reports list          # oldest first
+docker compose exec relay zkrp-relay reports show report/ab1/…
+```
+
+Decide how long to keep them and set an S3 lifecycle rule on `report/` to
+match (and say so in the app's privacy policy).
 
 ## Health
 

@@ -176,6 +176,18 @@ fn main() -> ExitCode {
         .build()
         .expect("tokio runtime");
 
+    // `zkrp-relay reports [list | show <id>]`: read user reports (api/log.rs).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("reports") {
+        return match runtime.block_on(api::reports_cli(config, &args[1..])) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match runtime.block_on(run(config)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

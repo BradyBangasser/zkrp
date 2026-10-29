@@ -97,6 +97,15 @@ an opaque, end-to-end-encrypted blob under a rotating, capability-style
 `mailbox_id` and fetched on reconnect. The relay stores only ciphertext keyed by
 mailbox id, in S3 under a lifecycle rule, with no link to identity.
 
+Apps can deposit their own sealed payloads, or ask libghost to deposit the
+message exactly as it was published (`ZRPHandle::publish_held`): signed and,
+on a sealed topic, sealed. A device that fetches it (`fetch_held`) receives
+it through the same path as a live message: opened, signature-checked
+(allowing up to 8 days of age instead of 10 minutes), attributed to its
+signer, and delivered once even if it also arrived live. That is what makes
+mail to a widely known address (a community inbox) safe to hold: nobody can
+deposit a message that verifies as someone else's.
+
 ## Push
 
 A device registers its push token under each mailbox it watches, **sealed**

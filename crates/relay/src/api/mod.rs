@@ -23,6 +23,7 @@ use libghost::admit::{SERVICE_BLOB, SERVICE_LOGGING, SERVICE_MAILBOX};
 
 mod blob;
 mod log;
+pub use log::reports_cli;
 mod mailbox;
 pub(crate) mod relay;
 

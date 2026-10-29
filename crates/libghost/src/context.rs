@@ -290,8 +290,8 @@ async fn swarm_task<B>(
                             }
                         }
 
-                        if let Some((topic, bytes, propagation_src, author)) = B::extract_gossip(&b_event) {
-                            let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, propagation_src, author }).await;
+                        if let Some((topic, bytes, _forwarder, author)) = B::extract_gossip(&b_event) {
+                            let _ = raw_tx.send(RawEvent::GossipMessage { topic, bytes, author, held: false }).await;
                         }
                     }
                     SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
@@ -491,6 +491,8 @@ async fn swarm_task<B>(
                                 .unsubscribe_topic(libp2p::gossipsub::IdentTopic::new(&topic));
                         }
                         SwarmCommand::Shutdown => break,
+                        // Handled by the crypto task; never forwarded here.
+                        SwarmCommand::PublishHeld { .. } | SwarmCommand::InjectHeld { .. } => {}
                     }
                 }
                 _ = reconnect_backoff.tick() => {
@@ -553,6 +555,36 @@ async fn swarm_task<B>(
     }
 }
 
+/// Sign `payload` for `topic`, seal it if the topic is sealed, and encode
+/// the envelope as it goes on the wire. None when sealed-only mode forbids
+/// sending it in the clear.
+fn outgoing(
+    account: &libp2p::identity::Keypair,
+    seals: &Seals,
+    topic: &str,
+    payload: &[u8],
+    content_type: u16,
+) -> Option<Vec<u8>> {
+    tracing::info!("crypto_task: publishing topic={topic} content_type=0x{content_type:04x}");
+    let mut message = GhostMessage::new(content_type, payload).ok()?;
+    crate::signed::sign(account, topic, &mut message, crate::admit::now_unix());
+    let signed = postcard::to_allocvec(&message).ok()?;
+    let payload = match seals.key(topic) {
+        Some(key) => {
+            let sealed = crate::sealed::seal(&key, topic, &signed);
+            postcard::to_allocvec(&GhostMessage::new(codec::CONTENT_TYPE_SEALED, &sealed).ok()?).ok()?
+        }
+        None if seals.required() => {
+            tracing::warn!("sealed-only: not publishing on an unsealed topic");
+            return None;
+        }
+        None => signed,
+    };
+    let mut encoded = Vec::new();
+    encode(&payload).encode(&mut encoded).ok()?;
+    Some(encoded)
+}
+
 #[allow(unused, clippy::too_many_arguments)]
 async fn crypto_task(
     mut raw_rx: mpsc::Receiver<RawEvent>,
@@ -565,7 +597,14 @@ async fn crypto_task(
     blob_manager: Arc<BlobManager>,
     account: libp2p::identity::Keypair,
     seals: Arc<Seals>,
+    raw_tx: mpsc::Sender<RawEvent>,
 ) {
+    // Signatures of recent messages: a message fetched from a mailbox may
+    // also have arrived live, and handlers should see it once.
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut seen_order: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    const SEEN_MAX: usize = 4096;
+
     // Transport peer -> the account it has proven (by signing) it speaks for,
     // and how many live transports each account has. Apps only ever see
     // account ids in PeerConnected / PeerDisconnected / Message.
@@ -577,7 +616,7 @@ async fn crypto_task(
         tokio::select! {
         Some(event) = raw_rx.recv() => {
             match event {
-                RawEvent::GossipMessage { bytes, propagation_src, author, topic } => {
+                RawEvent::GossipMessage { bytes, author, topic, held } => {
 
                     // Decode envelope
                     let envelope = match GhostEnvelope::decode(bytes.as_ref()) {
@@ -618,13 +657,24 @@ async fn crypto_task(
                     };
 
                     // Attribute to the signing account, never to the forwarder.
-                    let sender = match crate::signed::verify(&topic, &msg, crate::admit::now_unix()) {
+                    let verify = if held { crate::signed::verify_held } else { crate::signed::verify };
+                    let sender = match verify(&topic, &msg, crate::admit::now_unix()) {
                         Ok(account) => account,
                         Err(e) => {
                             tracing::debug!("dropping message on {topic}: {e}");
                             continue;
                         }
                     };
+
+                    if !seen.insert(msg.signature.clone()) {
+                        continue;
+                    }
+                    seen_order.push_back(msg.signature.clone());
+                    if seen_order.len() > SEEN_MAX
+                        && let Some(old) = seen_order.pop_front()
+                    {
+                        seen.remove(&old);
+                    }
 
                     if let Some(transport) = author
                         && accounts.insert(transport, sender).is_none()
@@ -794,39 +844,38 @@ async fn crypto_task(
 
             Some(cmd) = crypto_rx.recv() => {
                 match cmd {
-                    SwarmCommand::Publish { topic, payload , content_type} => {
-                        tracing::info!(
-                            "crypto_task: publishing topic={} content_type=0x{:04x}",
-                            topic,
-                            content_type
-                        );
-
-                        if let Ok(mut message) = GhostMessage::new(content_type, &payload) {
-                            crate::signed::sign(&account, &topic, &mut message, crate::admit::now_unix());
-                            let signed = postcard::to_allocvec(&message).unwrap();
-                            let payload = match seals.key(&topic) {
-                                Some(key) => {
-                                    let sealed = crate::sealed::seal(&key, &topic, &signed);
-                                    let Ok(outer) = GhostMessage::new(codec::CONTENT_TYPE_SEALED, &sealed) else {
-                                        continue;
-                                    };
-                                    postcard::to_allocvec(&outer).unwrap()
-                                }
-                                None if seals.required() => {
-                                    tracing::warn!("sealed-only: not publishing on an unsealed topic");
-                                    continue;
-                                }
-                                None => signed,
-                            };
-                            let envelope = encode(&payload);
-                            let mut encoded = Vec::new();
-                            envelope.encode(&mut encoded).unwrap();
+                    SwarmCommand::Publish { topic, payload, content_type } => {
+                        if let Some(encoded) = outgoing(&account, &seals, &topic, &payload, content_type) {
                             let _ = swarm_tx.send(SwarmCommand::Publish {
                                 topic,
                                 payload: encoded,
                                 content_type
                             }).await;
                         }
+                    }
+                    SwarmCommand::PublishHeld { topic, payload, content_type, reply } => {
+                        let encoded = outgoing(&account, &seals, &topic, &payload, content_type);
+                        if let Some(encoded) = &encoded {
+                            let _ = swarm_tx.send(SwarmCommand::Publish {
+                                topic,
+                                payload: encoded.clone(),
+                                content_type
+                            }).await;
+                        }
+                        let _ = reply.send(encoded);
+                    }
+                    SwarmCommand::InjectHeld { topic, bytes } => {
+                        // Back through the receive path above, without
+                        // blocking this loop on its own channel.
+                        let tx = raw_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = tx.send(RawEvent::GossipMessage {
+                                author: None,
+                                topic,
+                                bytes,
+                                held: true,
+                            }).await;
+                        });
                     }
                     SwarmCommand::Subscribe { topic } => {
                         let _ = swarm_tx.send(SwarmCommand::Subscribe { topic }).await;
@@ -851,6 +900,19 @@ pub enum SwarmCommand {
         payload: Vec<u8>,
         content_type: u16,
     },
+    /// Publish, and hand back the envelope as sent (for a mailbox deposit).
+    /// None when it wasn't sent (sealed-only and the topic has no key).
+    PublishHeld {
+        topic: String,
+        payload: Vec<u8>,
+        content_type: u16,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
+    },
+    /// An envelope fetched from a mailbox, to receive as if it came live.
+    InjectHeld {
+        topic: String,
+        bytes: Vec<u8>,
+    },
     Subscribe {
         topic: String,
     },
@@ -862,12 +924,14 @@ pub enum SwarmCommand {
 
 pub(crate) enum RawEvent {
     GossipMessage {
-        propagation_src: libp2p::PeerId,
         /// The transport peer that published it (gossipsub `source`), as
         /// opposed to the neighbour that forwarded it.
         author: Option<libp2p::PeerId>,
         topic: String,
         bytes: Vec<u8>,
+        /// Fetched from a relay mailbox rather than received live: may be
+        /// days old (`signed::verify_held`).
+        held: bool,
     },
     PeerDiscovered {
         peer_id: libp2p::PeerId,
@@ -939,6 +1003,66 @@ impl ZRPHandle {
 
     pub async fn unsubscribe(&self, topic: String) {
         let _ = self.cmd_tx.send(SwarmCommand::Unsubscribe { topic }).await;
+    }
+
+/// Publish on `topic` and also leave the envelope, exactly as sent (signed,
+    /// and sealed if the topic is), in `mailbox_id` on the relay at
+    /// `grpc_addr`, for a recipient who is offline now. Receivers check it like
+    /// any live message when they fetch it (`fetch_held`). The live copy goes
+    /// out even if the deposit fails.
+    pub async fn publish_held(
+        &self,
+        topic: String,
+        payload: Vec<u8>,
+        content_type: u16,
+        mailbox_id: &str,
+        grpc_addr: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (reply, envelope) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(SwarmCommand::PublishHeld { topic, payload, content_type, reply })
+            .await
+            .map_err(|_| "mesh stopped")?;
+        let envelope = envelope.await.map_err(|_| "mesh stopped")?.ok_or("not sent")?;
+        let tag = crate::push::tag(self.store.as_ref(), mailbox_id);
+        crate::mailbox::deposit(self.store.as_ref(), grpc_addr, mailbox_id, envelope, tag).await?;
+        Ok(())
+    }
+
+    /// Fetch what `mailbox_id` holds that this device hasn't read, and receive
+    /// it as if it had arrived on `topic` live: opened if the topic is sealed,
+    /// signature-checked, given to handlers once. Returns how many came.
+    pub async fn fetch_held(
+        &self,
+        topic: &str,
+        mailbox_id: &str,
+        grpc_addr: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let cursor_key = format!("zkrp/mailbox/cursor/{mailbox_id}");
+        let mut after = self
+            .store
+            .get(&cursor_key)
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+        let mut count = 0;
+        loop {
+            let (held, more) =
+                crate::mailbox::fetch(self.store.as_ref(), grpc_addr, mailbox_id, &after).await?;
+            let Some(last) = held.last() else { break };
+            after = last.msg_id.clone();
+            for h in held {
+                count += 1;
+                let _ = self
+                    .cmd_tx
+                    .send(SwarmCommand::InjectHeld { topic: topic.to_string(), bytes: h.ciphertext })
+                    .await;
+            }
+            self.store.set(&cursor_key, after.clone().into_bytes());
+            if !more {
+                break;
+            }
+        }
+        Ok(count)
     }
 
     /// This context's sealed topics (see `crate::sealed`).
@@ -1093,6 +1217,7 @@ impl ZRPContext {
         let (crypto_tx, crypto_rx) = mpsc::channel::<SwarmCommand>(32);
         let (swarm_tx, swarm_rx) = mpsc::channel::<SwarmCommand>(32);
         let (raw_tx, raw_rx) = mpsc::channel::<RawEvent>(64);
+        let raw_tx_inject = raw_tx.clone();
 
         let store_handle = ZRPHandle {
             cmd_tx: crypto_tx.clone(),
@@ -1146,6 +1271,7 @@ impl ZRPContext {
             Arc::clone(&blob_manager),
             account,
             Arc::clone(&self.seals),
+            raw_tx_inject,
         ));
 
         let _ = crypto_tx

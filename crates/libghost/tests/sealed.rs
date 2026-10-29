@@ -109,3 +109,37 @@ async fn sealed_topic_reaches_key_holders_only() {
         h.shutdown().await;
     }
 }
+
+#[tokio::test]
+#[ignore]
+async fn held_message_reaches_a_recipient_who_was_offline() {
+    let grpc = std::env::var("ZKRP_E2E_GRPC").expect("ZKRP_E2E_GRPC");
+    let id = hex::encode(&NodeIdentity::generate_conversation_key()[..16]);
+    let topic = format!("e2e/v1/mb/{id}");
+    let key: [u8; 32] = NodeIdentity::generate_conversation_key().try_into().unwrap();
+
+    // Alice sends while Bob isn't even running.
+    let (alice, _, alice_account) = node(true).await;
+    alice.seals().insert(topic.clone(), key);
+    alice
+        .publish_held(topic.clone(), b"like".to_vec(), 0x0050, &id, &grpc)
+        .await
+        .expect("publish_held");
+    alice.shutdown().await;
+
+    let (bob, mut bob_rx, _) = node(true).await;
+    bob.seals().insert(topic.clone(), key);
+    assert_eq!(bob.fetch_held(&topic, &id, &grpc).await.unwrap(), 1);
+    let got = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
+        .await
+        .expect("nothing delivered")
+        .unwrap();
+    assert_eq!(got.0, topic);
+    assert_eq!(got.1, alice_account, "attributed to the signing account");
+    assert_eq!(got.2, b"like");
+    // The cursor moved on: nothing new, and nothing delivered twice.
+    assert_eq!(bob.fetch_held(&topic, &id, &grpc).await.unwrap(), 0);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(bob_rx.try_recv().is_err());
+    bob.shutdown().await;
+}
