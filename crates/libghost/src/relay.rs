@@ -47,6 +47,25 @@ impl RelayClient {
         data: Vec<u8>,
         store: &dyn crate::store::GhostStore,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        Self::upload(grpc_addr, data, store, None).await
+    }
+
+    /// Upload a user report: like a debug log (anonymous, admission-gated),
+    /// but filed apart from logs for the operator (`zkrp-relay reports`).
+    pub async fn upload_report(
+        grpc_addr: &str,
+        data: Vec<u8>,
+        store: &dyn crate::store::GhostStore,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        Self::upload(grpc_addr, data, store, Some("report")).await
+    }
+
+    async fn upload(
+        grpc_addr: &str,
+        data: Vec<u8>,
+        store: &dyn crate::store::GhostStore,
+        kind: Option<&'static str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let channel = crate::grpc::connect(grpc_addr).await?;
         let mut client = LoggingClient::new(channel);
 
@@ -58,6 +77,11 @@ impl RelayClient {
         let mut request = tonic::Request::new(tokio_stream::iter(chunks));
         crate::admit::attach_grpc_admission(&mut request, store, grpc_addr, crate::admit::SERVICE_LOGGING)
             .await;
+        if let Some(kind) = kind {
+            request
+                .metadata_mut()
+                .insert("x-zkrp-upload-kind", tonic::metadata::MetadataValue::from_static(kind));
+        }
         let resp = client.upload_debug_log(request).await?.into_inner();
         Ok(resp.log_id)
     }

@@ -19,6 +19,9 @@ use crate::protocols::ghost::v0::GhostMessage;
 pub const HELLO_TOPIC: &str = "ghost/hello";
 /// Messages signed further than this from now (either way) are dropped.
 pub const MAX_SKEW_SECS: u64 = 600;
+/// A message held in a relay mailbox (`crate::mailbox`) may be this old when
+/// it's fetched: about as long as relays keep them.
+pub const HELD_MAX_AGE_SECS: u64 = 8 * 86_400;
 const DOMAIN: &[u8] = b"ghost/msg/v1";
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -59,10 +62,24 @@ pub fn sign(account: &Keypair, topic: &str, msg: &mut GhostMessage, now: u64) {
 
 /// The account that signed `msg` for `topic`.
 pub fn verify(topic: &str, msg: &GhostMessage, now: u64) -> Result<PeerId, SignError> {
+    verify_within(topic, msg, now, MAX_SKEW_SECS)
+}
+
+/// `verify` for a message fetched from a relay mailbox, which can be days old.
+pub fn verify_held(topic: &str, msg: &GhostMessage, now: u64) -> Result<PeerId, SignError> {
+    verify_within(topic, msg, now, HELD_MAX_AGE_SECS)
+}
+
+fn verify_within(topic: &str, msg: &GhostMessage, now: u64, max_age: u64) -> Result<PeerId, SignError> {
     if msg.signature.is_empty() || msg.sender.is_empty() {
         return Err(SignError::Unsigned);
     }
-    if msg.ts.abs_diff(now) > MAX_SKEW_SECS {
+    let fresh = if msg.ts > now {
+        msg.ts - now <= MAX_SKEW_SECS
+    } else {
+        now - msg.ts <= max_age
+    };
+    if !fresh {
         return Err(SignError::Stale);
     }
     let key = PublicKey::try_decode_protobuf(&msg.sender).map_err(|_| SignError::BadKey)?;
@@ -107,5 +124,21 @@ mod tests {
         m.sender = alice.public().encode_protobuf();
         assert_eq!(verify("t", &m, 1000), Err(SignError::BadSignature));
         assert_eq!(verify("t", &message(b"x"), 1000), Err(SignError::Unsigned));
+    }
+
+    #[test]
+    fn held_messages_may_be_days_old_but_not_older() {
+        let account = Keypair::generate_ed25519();
+        let mut m = message(b"like");
+        sign(&account, "t", &mut m, 1_000_000);
+        let three_days = 1_000_000 + 3 * 86_400;
+        assert_eq!(verify("t", &m, three_days), Err(SignError::Stale));
+        assert_eq!(verify_held("t", &m, three_days), Ok(account.public().to_peer_id()));
+        assert_eq!(
+            verify_held("t", &m, 1_000_000 + HELD_MAX_AGE_SECS + 1),
+            Err(SignError::Stale)
+        );
+        // Not from the future beyond clock skew, held or not.
+        assert_eq!(verify_held("t", &m, 1_000_000 - MAX_SKEW_SECS - 1), Err(SignError::Stale));
     }
 }

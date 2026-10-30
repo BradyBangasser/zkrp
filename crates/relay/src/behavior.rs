@@ -33,8 +33,18 @@ impl RelayBehavior {
                 max_circuit_bytes: 0,
                 max_circuits: 256,
                 max_circuits_per_peer: 16,
+                // libp2p's defaults also cap each IP at 60 a minute, but a
+                // whole campus can share one NAT address. Keep the per-peer
+                // limits; admission is the real gate, and the per-IP ceiling
+                // only stops one host from flooding the relay.
+                reservation_rate_limiters: Vec::new(),
+                circuit_src_rate_limiters: Vec::new(),
                 ..Default::default()
-            },
+            }
+            .reservation_rate_per_peer(per(30), Duration::from_secs(120))
+            .reservation_rate_per_ip(per(1200), Duration::from_secs(60))
+            .circuit_src_per_peer(per(30), Duration::from_secs(120))
+            .circuit_src_per_ip(per(1200), Duration::from_secs(60)),
         );
 
         let identify = identify::Behaviour::new(
@@ -52,4 +62,8 @@ impl RelayBehavior {
             admit: libghost::admit::relay_behaviour(),
         }
     }
+}
+
+fn per(n: u32) -> std::num::NonZeroU32 {
+    std::num::NonZeroU32::new(n).expect("rate limits are positive")
 }
