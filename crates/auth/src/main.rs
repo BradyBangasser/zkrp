@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tonic::transport::Server;
 
 use crate::attest::{AppAttest, Environment};
-use crate::mailer::{LogMailer, Mailer, SesMailer};
+use crate::mailer::{FallbackMailer, LogMailer, Mailer, SesMailer};
 use crate::nullifier::{KmsPepper, LocalPepper, NullifierSet, Pepper};
 use crate::proto::auth_service_server::AuthServiceServer;
 use crate::service::{Auth, SendLimiter};
@@ -142,6 +142,17 @@ async fn main() -> Result<(), BoxError> {
     let link_base = env("VERIFY_LINK_BASE")?;
     let mailer: Arc<dyn Mailer> = match std::env::var("MAILER").as_deref() {
         Ok("log") => Arc::new(LogMailer { link_base }),
+        Ok("ses-or-log") => {
+            tracing::warn!("MAILER=ses-or-log: links SES refuses are logged");
+            Arc::new(FallbackMailer {
+                ses: SesMailer::new(
+                    aws_sdk_sesv2::Client::new(&aws),
+                    env("MAIL_FROM")?,
+                    link_base.clone(),
+                ),
+                log: LogMailer { link_base },
+            })
+        }
         _ => Arc::new(SesMailer::new(
             aws_sdk_sesv2::Client::new(&aws),
             env("MAIL_FROM")?,

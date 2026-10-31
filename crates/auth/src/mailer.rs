@@ -1,3 +1,4 @@
+use aws_sdk_sesv2::error::ProvideErrorMetadata;
 use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 
 #[async_trait::async_trait]
@@ -61,7 +62,12 @@ impl Mailer for SesMailer {
             .destination(Destination::builder().to_addresses(to).build())
             .content(content)
             .send()
-            .await?;
+            .await
+            .map_err(|e| match e.code() {
+                // SES's message can quote the recipient; its code never does.
+                Some(code) => anyhow::anyhow!("SES {code}"),
+                None => anyhow::anyhow!("SES: {e}"),
+            })?;
 
         Ok(())
     }
@@ -78,5 +84,52 @@ impl Mailer for LogMailer {
     async fn send_link(&self, _to: &str, token_b64: &str) -> Result<(), anyhow::Error> {
         tracing::warn!("MAILER=log, magic link: {}#{}", self.link_base, token_b64);
         Ok(())
+    }
+}
+
+/// Stopgap while SES is in its sandbox: send through SES, and when SES refuses
+/// (an unverified recipient), log the link like `LogMailer` so the operator
+/// can pass it on. Not for steady state: logged links are live credentials.
+pub struct FallbackMailer {
+    pub ses: SesMailer,
+    pub log: LogMailer,
+}
+
+#[async_trait::async_trait]
+impl Mailer for FallbackMailer {
+    async fn send_link(&self, to: &str, token_b64: &str) -> Result<(), anyhow::Error> {
+        match self.ses.send_link(to, token_b64).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!("{e}; logging the link instead");
+                self.log.send_link(to, token_b64).await
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn falls_back_to_the_log_when_ses_refuses() {
+        let conf = aws_sdk_sesv2::Config::builder()
+            .behavior_version(aws_sdk_sesv2::config::BehaviorVersion::latest())
+            .region(aws_sdk_sesv2::config::Region::new("us-east-2"))
+            .credentials_provider(aws_sdk_sesv2::config::Credentials::for_tests())
+            .endpoint_url("http://127.0.0.1:1")
+            .build();
+        let ses = SesMailer::new(
+            aws_sdk_sesv2::Client::from_conf(conf),
+            "noreply@example.edu".into(),
+            "fratrat://verify".into(),
+        );
+        assert!(ses.send_link("a@example.edu", "tok").await.is_err());
+        let fallback = FallbackMailer {
+            ses,
+            log: LogMailer { link_base: "fratrat://verify".into() },
+        };
+        assert!(fallback.send_link("a@example.edu", "tok").await.is_ok());
     }
 }
