@@ -160,6 +160,12 @@ async fn main() -> Result<(), BoxError> {
         )),
     };
 
+    // Testing stopgap: no email at all, the app gets the token back directly.
+    let email_proof = std::env::var("EMAIL_PROOF").as_deref() != Ok("off");
+    if !email_proof {
+        tracing::warn!("EMAIL_PROOF=off: anyone can enroll as any allowed address");
+    }
+
     // A debug build on a developer's laptop must not enroll against
     // production, and a release build can never skip attestation.
     let attest_env = match std::env::var("APP_ATTEST_ENV").as_deref() {
@@ -212,6 +218,7 @@ async fn main() -> Result<(), BoxError> {
         community_secret: zeroize::Zeroizing::new(secret("community-key").map_err(|e| {
             format!("{e} (run `zkrp-auth keygen` on the secrets directory to add it)")
         })?),
+        email_proof,
     };
 
     tracing::info!("zkrp-auth {}", telemetry::version());

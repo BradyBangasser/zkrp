@@ -44,22 +44,22 @@ async fn client(auth_addr: &str) -> Result<AuthServiceClient<Channel>, EnrollErr
     Ok(AuthServiceClient::new(crate::grpc::connect(auth_addr).await?))
 }
 
-/// Step 1: ask for a magic link.
+/// Step 1: ask for a magic link. Returns the link's token itself when the
+/// service runs without email proof (testing); redeem it as if from the link.
 pub async fn request_link(
     store: &dyn GhostStore,
     auth_addr: &str,
     email: &str,
-) -> Result<(), EnrollError> {
-    let challenge = client(auth_addr)
+) -> Result<Option<String>, EnrollError> {
+    let resp = client(auth_addr)
         .await?
         .get_challenge(ChallengeRequest {
             email: email.to_string(),
         })
         .await?
-        .into_inner()
-        .challenge;
-    store.set(CHALLENGE_KEY, challenge);
-    Ok(())
+        .into_inner();
+    store.set(CHALLENGE_KEY, resp.challenge);
+    Ok(Some(resp.token).filter(|t| !t.is_empty()))
 }
 
 /// An enrollment between `begin` and `finish`.
