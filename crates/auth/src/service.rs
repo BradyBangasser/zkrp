@@ -35,6 +35,9 @@ pub struct Auth {
     pub limiter: SendLimiter,
     /// Derives each community's per-epoch key (`zkcred::community_key`).
     pub community_secret: zeroize::Zeroizing<Vec<u8>>,
+    /// False only with EMAIL_PROOF=off: hand the token straight back instead
+    /// of emailing it, so anyone can enroll as any allowed address.
+    pub email_proof: bool,
 }
 
 fn now_unix() -> u64 {
@@ -134,6 +137,12 @@ impl Auth {
             .seal(&email, &challenge, now_unix() + TOKEN_TTL.as_secs());
         let token_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&token);
 
+        if !self.email_proof {
+            return Ok(Response::new(ChallengeResponse {
+                challenge: challenge.to_vec(),
+                token: token_b64,
+            }));
+        }
         self.mailer.send_link(&email, &token_b64).await.map_err(|e| {
             // Never log the address.
             tracing::error!("failed to send magic link: {e}");
@@ -142,6 +151,7 @@ impl Auth {
 
         Ok(Response::new(ChallengeResponse {
             challenge: challenge.to_vec(),
+            token: String::new(),
         }))
     }
 

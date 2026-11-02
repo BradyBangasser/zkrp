@@ -23,6 +23,10 @@ message ChallengeResponse {
   // Random. The app attests over SHA-256("zkrp/attest/v1" || challenge ||
   // SHA-256(credential_request)), binding the device to this enrollment.
   bytes challenge = 1;
+  // Empty unless the service runs without email proof (EMAIL_PROOF=off, a
+  // testing stopgap): then nothing is emailed and this is the magic link's
+  // token, for the app to redeem directly.
+  string token = 2;
 }
 
 message RedeemRequest {

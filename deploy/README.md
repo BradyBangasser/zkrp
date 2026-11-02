@@ -316,6 +316,7 @@ volume: the relay's peer id survives restarts), and the metrics (`9464`),
 | `DATABASE_URL` | `postgres://auth:<AUTH_DB_PASSWORD>@postgres/auth` |
 | `ALLOWED_EMAIL_DOMAINS` | Who may enroll; subdomains included. |
 | `MAILER`, `MAIL_FROM`, `VERIFY_LINK_BASE` | `ses` (or `log` in development); the magic link's base URL. `ses-or-log` logs the link when SES refuses it: a stopgap while SES is in its sandbox, since a logged link is a live credential. |
+| `EMAIL_PROOF` | `off` emails nothing and returns the token to the app: anyone can enroll as any allowed address, using up that student's slots for the epoch. Testing only. |
 | `APP_ATTEST_APP_ID`, `APP_ATTEST_ENV` | `<TEAM ID>.<bundle id>`; `production` or `development`. |
 | `NULLIFIER_KMS_KEY_ID` | KMS HMAC key for nullifiers. Empty: the local `nullifier-key` secret. |
 | `EPOCH_SECS` | Credential lifetime. Relays must match. |
